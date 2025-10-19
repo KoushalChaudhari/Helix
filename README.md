@@ -35,6 +35,10 @@ JOAT/
 
 ---
 
+**PS:** use the ```joat.bat``` file to start the bot directly instead of all the tiring command prompt stuff!
+
+---
+
 ## 🧩 Features
 
 ### 🛡 Moderation Commands
@@ -171,3 +175,4 @@ python3 bot.py
 This project is released for **educational and personal use** only.  
 Feel free to modify or extend it for your own Discord servers.
 
+---
