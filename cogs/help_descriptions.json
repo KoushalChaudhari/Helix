@@ -1,0 +1,68 @@
+{
+  "categories": {
+    "Core": {
+      "desc": "General bot commands and configuration.",
+      "commands": ["help", "ping", "uptime", "invite", "about", "stats", "prefix", "feedback", "bug"]
+    },
+    "Moderation": {
+      "desc": "Moderation and case management tools.",
+      "commands": ["warn", "warns", "clearwarns", "kick", "ban", "unban", "mute", "unmute", "timeout", "reason", "duration", "purge", "clean", "lock", "unlock", "slowmode", "broadcast"]
+    }
+  },
+  "commands": {
+    "help": {
+      "brief": "Show help for commands or categories.",
+      "usage": ["{p}help", "{p}help moderation", "{p}help ban"]
+    },
+    "ping": {
+      "brief": "Check the bot’s latency.",
+      "usage": ["{p}ping"]
+    },
+    "uptime": {
+      "brief": "Show how long the bot has been online.",
+      "usage": ["{p}uptime"]
+    },
+    "invite": {
+      "brief": "Get the bot’s invite link.",
+      "usage": ["{p}invite"]
+    },
+    "about": {
+      "brief": "Show information about the bot.",
+      "usage": ["{p}about"]
+    },
+    "stats": {
+      "brief": "Display bot/system statistics.",
+      "usage": ["{p}stats"]
+    },
+    "prefix": {
+      "brief": "View or change the server prefix.",
+      "usage": ["{p}prefix", "{p}prefix ?"]
+    },
+    "feedback": {
+      "brief": "Send feedback to the developer.",
+      "usage": ["{p}feedback Your bot is awesome!"]
+    },
+    "bug": {
+      "brief": "Report a bug to the developer.",
+      "usage": ["{p}bug The warn command failed to DM."]
+    },
+
+    "warn": { "brief": "Warn a user and log the case.", "usage": ["{p}warn @user Spamming"] },
+    "warns": { "brief": "View warnings for a user.", "usage": ["{p}warns", "{p}warns @user"] },
+    "clearwarns": { "brief": "Clear all warnings for a user.", "usage": ["{p}clearwarns @user"] },
+    "kick": { "brief": "Kick a member from the server.", "usage": ["{p}kick @user Reason"] },
+    "ban": { "brief": "Ban a member (optional prune days).", "usage": ["{p}ban @user Reason 7"] },
+    "unban": { "brief": "Unban a user by ID or tag.", "usage": ["{p}unban 1234567890", "{p}unban Name#1234"] },
+    "mute": { "brief": "Timeout (mute) a member.", "usage": ["{p}mute @user 10m Spamming"] },
+    "unmute": { "brief": "Remove a timeout.", "usage": ["{p}unmute @user"] },
+    "timeout": { "brief": "Apply/change a timeout.", "usage": ["{p}timeout @user 30m Flooding"] },
+    "reason": { "brief": "Update a case reason.", "usage": ["{p}reason 5 Updated reason"] },
+    "duration": { "brief": "Update a mute/timeout duration.", "usage": ["{p}duration 5 45m"] },
+    "purge": { "brief": "Bulk delete messages.", "usage": ["{p}purge 50", "{p}purge 100 contains:spam"] },
+    "clean": { "brief": "Delete bot + command messages.", "usage": ["{p}clean", "{p}clean 100"] },
+    "lock": { "brief": "Lock a channel for @everyone.", "usage": ["{p}lock #general Spam attack"] },
+    "unlock": { "brief": "Unlock a channel.", "usage": ["{p}unlock #general"] },
+    "slowmode": { "brief": "Set/disable channel slowmode.", "usage": ["{p}slowmode 5", "{p}slowmode off"] },
+    "broadcast": { "brief": "Send an announcement embed.", "usage": ["{p}broadcast Maintenance in 10 minutes!"] }
+  }
+}
