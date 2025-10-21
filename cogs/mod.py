@@ -1,3 +1,4 @@
+# cogs/mod.py
 from __future__ import annotations
 
 import contextlib
@@ -85,11 +86,82 @@ def _find_field(embed: discord.Embed, name: str) -> Optional[int]:
             return i
     return None
 
+def _current_prefix(ctx: commands.Context) -> str:
+    if hasattr(ctx.bot, "prefix_cache") and ctx.guild:
+        return ctx.bot.prefix_cache.get(str(ctx.guild.id), DEFAULT_PREFIX)
+    return DEFAULT_PREFIX
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Time helpers
 # ──────────────────────────────────────────────────────────────────────────────
 _UNIT_MS = {"s": 1_000, "m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
+
+INVITE_RE = re.compile(r"(discord\.gg/|discord\.com/invite/)", re.IGNORECASE)
+URL_RE    = re.compile(r"https?://", re.IGNORECASE)
+
+def _is_image_attachment(a: discord.Attachment) -> bool:
+    return any(a.filename.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+
+def _mk_filter(mode: str, value: str | None):
+    mode = mode.lower()
+
+    if mode == "any":
+        return lambda m: True
+
+    if mode == "user":
+        # value must be a user mention/id/resolvable via ctx.guild
+        # we return a placeholder check; the command will bind the resolved member id
+        uid = int(value)
+        return lambda m: m.author.id == uid
+
+    if mode == "match":
+        needle = (value or "").lower()
+        return lambda m: (m.content or "").lower().find(needle) != -1
+
+    if mode == "startswith":
+        needle = (value or "").lower()
+        return lambda m: (m.content or "").lower().startswith(needle)
+
+    if mode == "endswith":
+        needle = (value or "").lower()
+        return lambda m: (m.content or "").lower().endswith(needle)
+
+    if mode == "not":
+        needle = (value or "").lower()
+        return lambda m: needle not in (m.content or "").lower()
+
+    if mode == "links":
+        return lambda m: URL_RE.search(m.content or "") is not None
+
+    if mode == "invites":
+        return lambda m: INVITE_RE.search(m.content or "") is not None
+
+    if mode == "images":
+        return lambda m: any(_is_image_attachment(a) for a in m.attachments)
+
+    if mode == "mentions":
+        return lambda m: bool(m.mentions or m.role_mentions or m.mention_everyone)
+
+    if mode == "embeds":
+        return lambda m: bool(m.embeds)
+
+    if mode == "bots":
+        return lambda m: m.author.bot
+
+    if mode == "humans":
+        return lambda m: not m.author.bot
+
+    if mode == "text":
+        return lambda m: bool(m.content and m.content.strip())
+
+    # fallback: treat unknown as any
+    return lambda m: True
+
+
+def _format_mode(mode: str, value: str | None) -> str:
+    if value:
+        return f"{mode} `{value}`"
+    return mode
 
 
 def parse_duration_ms(s: str) -> Optional[int]:
@@ -179,15 +251,27 @@ class Moderation(commands.Cog):
         dm_ok: bool,
     ):
         """Create a per-guild case number, post the log embed, and index the message location + user_id."""
+    async def _log_case(
+        self,
+        ctx: commands.Context,
+        target: discord.abc.User,
+        action: str,
+        reason: str,
+        duration: str | None,
+        dm_ok: bool,
+    ) -> int:
+        """Create a per-guild case number, post the log embed, index the message, and return case number."""
+        case_no = -1  # ensure defined even if something fails early
+
         # 1) get next case number + mod-log id
         async with AsyncSessionLocal() as session:
             cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            case_no = next_case_number(cfg)
+            case_no = next_case_number(cfg)  # <-- always set here
             modlog_id = get_modlog_channel_id(cfg)
             session.add(cfg)
             await session.commit()
 
-        # 2) build the log embed (use your standardized colors)
+        # 2) build the log embed
         action_color = {
             "Warn": COLORS["WARN"],
             "Mute": COLORS["MUTE"],
@@ -206,7 +290,7 @@ class Moderation(commands.Cog):
             name=f"Case {case_no} | {action} | {getattr(target, 'name', str(target))}",
             icon_url=(target.display_avatar.url if getattr(target, "display_avatar", None) else discord.Embed.Empty),
         )
-        embed.add_field(name="User", value=f"{getattr(target, 'mention', str(target))} (`{getattr(target, 'id', '')}`)", inline=True)
+        embed.add_field(name="User", value=f"{getattr(target, 'mention', str(target))} | `{getattr(target, 'id', '')}`", inline=True)
         embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
         embed.add_field(name="Reason", value=(reason[:1024] or "No reason provided"), inline=False)
         if duration:
@@ -222,26 +306,29 @@ class Moderation(commands.Cog):
                 except Exception:
                     channel = None
 
-        message = await (channel or ctx.channel).send(embed=embed)
+            message_obj = await (channel or ctx.channel).send(embed=embed)
 
-        # 4) index this case → (channel, message, user)
-        async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            _set_case_index_entry(cfg, case_no, message.channel.id, message.id, getattr(target, "id", None))
-            session.add(cfg)
-            await session.commit()
+            # 4) index this case → (channel, message, user)
+            async with AsyncSessionLocal() as session:
+                cfg = await get_guild_cfg(session, str(ctx.guild.id))
+                _set_case_index_entry(cfg, case_no, message_obj.channel.id, message_obj.id, getattr(target, "id", None))
+                session.add(cfg)
+                await session.commit()
 
-        # 5) short summary back to the invoker (embed)
-        past_map = {"Warn": "warned", "Mute": "muted", "Timeout": "timed out", "Unmute": "unmuted", "Kick": "kicked", "Ban": "banned", "Unban": "unbanned"}
-        past = past_map.get(action, action.lower() + "ed")
-        note = "DM sent." if dm_ok else "DM failed."
-        summary = mkembed(
-            title=f"{getattr(target, 'name', str(target))} was {past}",
-            desc=(f"Reason: {reason}" + (f"\nDuration: {duration}" if duration else f"")) + f"\n{note}",
-            color=action_color,
-        )
-        summary.set_footer(text=f"Case {case_no} • Moderator: {ctx.author}")
-        await ctx.send(embed=summary)
+            # 5) short summary back to the invoker (embed)
+            past_map = {"Warn": "warned", "Mute": "muted", "Timeout": "timed out", "Unmute": "unmuted", "Kick": "kicked", "Ban": "banned", "Unban": "unbanned"}
+            past = past_map.get(action, action.lower() + "ed")
+            note = "DM sent." if dm_ok else "DM failed."
+            summary = mkembed(
+                title=f"{getattr(target, 'name', str(target))} was {past}",
+                desc=(f"Reason: {reason}" + (f"\nDuration: {duration}" if duration else "")) + f"\n{note}",
+                color=action_color,
+            )
+            summary.set_footer(text=f"Case {case_no} • Moderator: {ctx.author}")
+            await ctx.send(embed=summary)
+
+            return case_no
+
 
 
 
@@ -777,11 +864,10 @@ class Moderation(commands.Cog):
     @commands.has_permissions(manage_messages=True)
     @commands.bot_has_permissions(manage_messages=True)
     async def clean(self, ctx: commands.Context, limit: int = 50):
-        pref = PREFIX or ";"
 
         def check(msg: discord.Message):
             content = (msg.content or "").strip()
-            return (msg.author.id == ctx.bot.user.id) or content.startswith(pref)
+            return (msg.author.id == ctx.bot.user.id) 
 
         try:
             deleted = await ctx.channel.purge(limit=limit, check=check, bulk=True)
@@ -790,10 +876,10 @@ class Moderation(commands.Cog):
         except Exception as e:
             return await send_err(ctx, "Clean Failed", f"`{e}`")
 
-        note = await send_ok(ctx, "Clean", f"Deleted **{len(deleted)}** bot/command messages.")
+        '''note = await send_ok(ctx, "Clean", f"Deleted **{len(deleted)}** bot/command messages.")
         await asyncio.sleep(4)
         with contextlib.suppress(Exception):
-            await note.delete()
+            await note.delete()'''
 
 
 
@@ -804,36 +890,135 @@ class Moderation(commands.Cog):
 # =================================
     @commands.command(name="purge")
     @commands.has_permissions(manage_messages=True)
-    @commands.bot_has_permissions(manage_messages=True)
-    async def purge(self, ctx: commands.Context, limit: int, *, filters: str = ""):
-        target_user_id: Optional[int] = None
-        contains_text: Optional[str] = None
+    @commands.bot_has_permissions(manage_messages=True, read_message_history=True)
+    async def purge(
+        self,
+        ctx: commands.Context,
+        limit: int,
+        mode: str = "any",
+        *,
+        value: str | None = None,
+    ):
+        """
+        Delete messages with rich filters.
 
-        m = re.search(r"<@!?(?P<id>\d+)>", filters)
-        if m:
-            target_user_id = int(m.group("id"))
-        m2 = re.search(r"contains:(?P<text>.+)", filters, re.IGNORECASE)
-        if m2:
-            contains_text = m2.group("text").strip().lower()
+        Usage:
+        ;purge 100 any
+        ;purge 50 user @User
+        ;purge 50 match spam
+        ;purge 50 startswith !
+        ;purge 50 endswith ?
+        ;purge 50 not spoilers
+        ;purge 100 after 123456789012345678
+        ;purge 100 links
+        ;purge 100 invites
+        ;purge 50 images
+        ;purge 100 mentions
+        ;purge 100 embeds
+        ;purge 100 bots
+        ;purge 100 humans
+        ;purge 100 text
+        """
 
-        def check(msg: discord.Message):
-            if target_user_id and msg.author.id != target_user_id:
+        # normalize + guard
+        if limit < 1:
+            return await ctx.send(embed=mkembed("❌ Purge", "Limit must be at least 1.", COLORS["ERROR"]))
+        if limit > 1000:
+            return await ctx.send(embed=mkembed("⚠️ Purge", "Limit too large. Max **1000** to stay safe.", COLORS["WARNING"]))
+
+        # Resolve `user` mode target and `after` pivot
+        after_message = None
+        resolved_user_id: int | None = None
+        mode_lc = mode.lower()
+
+        # parse "after" (message ID or link)
+        if mode_lc == "after":
+            if not value:
+                return await ctx.send(embed=mkembed("❌ Purge", "Provide a message **ID** or **link** after which to delete.", COLORS["ERROR"]))
+            # Accept raw ID or full jump link
+            msg_id_match = re.search(r"(\d{15,25})$", value.strip())
+            if not msg_id_match:
+                return await ctx.send(embed=mkembed("❌ Purge", "I couldn't parse that message ID/link.", COLORS["ERROR"]))
+            msg_id = int(msg_id_match.group(1))
+            try:
+                after_message = await ctx.channel.fetch_message(msg_id)  # type: ignore
+            except Exception:
+                return await ctx.send(embed=mkembed("❌ Purge", "I couldn't fetch that message in this channel.", COLORS["ERROR"]))
+
+        # parse "user" (mention or id)
+        if mode_lc == "user":
+            if not value:
+                return await ctx.send(embed=mkembed("❌ Purge", "Provide a **user mention** or **user ID**.", COLORS["ERROR"]))
+            target = None
+            # Mention?
+            id_match = re.search(r"(\d{15,25})", value)
+            if id_match:
+                uid = int(id_match.group(1))
+                target = ctx.guild.get_member(uid) if ctx.guild else None
+                resolved_user_id = uid
+            if target is None and ctx.guild:
+                # Try by name#discrim or name (best effort)
+                target = discord.utils.get(ctx.guild.members, name=value)  # type: ignore
+                if target:
+                    resolved_user_id = target.id
+            if resolved_user_id is None:
+                return await ctx.send(embed=mkembed("❌ Purge", "I couldn't resolve that user.", COLORS["ERROR"]))
+
+        # Build check function
+        check = _mk_filter(mode_lc, str(resolved_user_id) if mode_lc == "user" else value)
+
+        # We don't want to delete pinned messages; also skip our own invocation.
+        invocation_id = ctx.message.id
+
+        def final_check(m: discord.Message) -> bool:
+            if m.id == invocation_id:
                 return False
-            if contains_text and contains_text not in (msg.content or "").lower():
+            if m.pinned:
                 return False
-            return True
+            try:
+                return check(m)
+            except Exception:
+                return False
+
+        # Do the purge. Note: TextChannel.purge ignores >14d messages in bulk mode automatically.
+        # Increase limit by 1 so the *count of non-invocation* deletions meets the user's request.
+        to_fetch = min(limit + 1, 10000)
 
         try:
-            deleted = await ctx.channel.purge(limit=limit, check=check, bulk=True)
+            deleted = await ctx.channel.purge(  # type: ignore
+                limit=to_fetch,
+                check=final_check,
+                after=after_message,
+                bulk=True,
+                oldest_first=False,
+            )
         except discord.Forbidden:
-            return await send_err(ctx, "Purge Failed", "I don’t have permission to delete messages here.")
-        except Exception as e:
-            return await send_err(ctx, "Purge Failed", f"`{e}`")
+            return await ctx.send(embed=mkembed("❌ Purge", "I don't have permission to delete messages here.", COLORS["ERROR"]))
+        except discord.HTTPException as e:
+            return await ctx.send(embed=mkembed("❌ Purge", f"Failed to purge: `{e}`", COLORS["ERROR"]))
 
-        note = await send_ok(ctx, "Purge", f"Purged **{len(deleted)}** messages.")
-        await asyncio.sleep(4)
+        # Ensure the command message is gone (if purge didn't catch it)
         with contextlib.suppress(Exception):
-            await note.delete()
+            await ctx.message.delete()
+
+        # Summarize
+        # Remove 1 from shown count if the invocation was caught (it shouldn't due to final_check)
+        count = len([m for m in deleted if m.id != invocation_id])
+
+        em = mkembed(
+            "🧹 Purge Complete",
+            desc=f"Deleted **{count}** message(s).",
+            color=COLORS["SUCCESS"],
+        )
+        em.add_field(name="Mode", value=_format_mode(mode_lc, value), inline=True)
+        if after_message:
+            em.add_field(name="After", value=f"[jump]({after_message.jump_url})", inline=True)
+        em.set_footer(text=f"Requested by {ctx.author}", icon_url=getattr(ctx.author.display_avatar, "url", None))
+        # Send a temp confirmation that auto-deletes
+        confirmation = await ctx.send(embed=em)
+        with contextlib.suppress(Exception):
+            await confirmation.delete(delay=5)
+
 
 
 
@@ -916,6 +1101,85 @@ class Moderation(commands.Cog):
         except discord.Forbidden:
             return await send_err(ctx, "Unlock", "I don’t have permission to edit channel permissions here.")
         await send_ok(ctx, "Unlock", f"🔓 Unlocked {channel.mention}.")
+
+
+
+
+# ==========================================
+#                MODSTATS
+# ==========================================
+    @commands.command(name="modstats", aliases=["ms"])
+    @commands.has_permissions(manage_messages=True)
+    async def modstats(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        """Show moderation statistics for yourself or another moderator."""
+        member = member or ctx.author
+        now = datetime.now(timezone.utc)
+
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, str(ctx.guild.id))
+            modstats = (cfg.modules or {}).get("modstats", {})
+            entry = modstats.get(str(member.id), {"actions": []})
+            actions = entry.get("actions", [])
+
+        if not actions:
+            return await send_info(ctx, "Moderation Stats", f"No moderation actions found for {member.mention}.")
+
+        # Define categories and counters
+        types = ["mute", "ban", "kick", "warn"]
+        counts = {t: {"7d": 0, "30d": 0, "all": 0} for t in types}
+
+        for a in actions:
+            try:
+                ts = datetime.fromisoformat(a["timestamp"])
+            except Exception:
+                continue
+            diff = (now - ts).days
+            t = a.get("type", "").lower()
+            if t not in counts:
+                continue
+
+            if diff <= 7:
+                counts[t]["7d"] += 1
+            if diff <= 30:
+                counts[t]["30d"] += 1
+            counts[t]["all"] += 1
+
+        # Totals
+        total_7d = sum(v["7d"] for v in counts.values())
+        total_30d = sum(v["30d"] for v in counts.values())
+        total_all = sum(v["all"] for v in counts.values())
+
+        embed = discord.Embed(
+            title="**Moderation Statistics**",
+            description=f"{member.display_name}",
+            color=COLORS["INFO"],
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_author(name=f"Stats for {member}", icon_url=getattr(member.display_avatar, "url", None))
+        embed.set_footer(text=f"ID: {member.id} • {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}")
+
+        for t in types:
+            embed.add_field(
+                name=f"{t.title()}s (last 7 days):",
+                value=str(counts[t]['7d']),
+                inline=True
+            )
+            embed.add_field(
+                name=f"{t.title()}s (last 30 days):",
+                value=str(counts[t]['30d']),
+                inline=True
+            )
+            embed.add_field(
+                name=f"{t.title()}s (all time):",
+                value=str(counts[t]['all']),
+                inline=True
+            )
+
+        embed.add_field(name="Total (last 7 days):", value=str(total_7d), inline=True)
+        embed.add_field(name="Total (last 30 days):", value=str(total_30d), inline=True)
+        embed.add_field(name="Total (all time):", value=str(total_all), inline=True)
+
+        await ctx.reply(embed=embed)
 
 
 
