@@ -10,40 +10,67 @@ from datetime import datetime, timezone
 # Reuse your existing embed style/colors
 from cogs.core import mkembed, COLORS
 
+PROFILE_URL_RE = re.compile(r"discord(?:app)?\.com/users/(?P<id>\d{15,25})", re.I)
 
-async def _resolve_user_member(ctx: commands.Context, arg: Optional[str]) -> Tuple[discord.User, Optional[discord.Member]]:
+async def _resolve_user_member(ctx: commands.Context, arg: Optional[str]) -> Tuple[Optional[discord.User], Optional[discord.Member]]:
     """
-    Resolve a target by mention | raw ID | none (falls back to author).
-    Returns (User, Member|None).
+    Resolve a target by:
+      - @mention
+      - raw ID
+      - profile URL: https://discord.com/users/<id>
+    Falls back to author if arg is None.
+    Returns (User|None, Member|None).
     """
+    # default to author
     if not arg:
-        return ctx.author, ctx.author if isinstance(ctx.author, discord.Member) else ctx.guild.get_member(ctx.author.id)
+        user = ctx.author
+        member = ctx.author if isinstance(ctx.author, discord.Member) else (ctx.guild.get_member(ctx.author.id) if ctx.guild else None)
+        return user, member
 
-    # mention or id in text
+    # 1) mention in message?
+    if ctx.message.mentions:
+        u = ctx.message.mentions[0]
+        m = ctx.guild.get_member(u.id) if ctx.guild else None
+        return u, m
+
+    # 2) profile URL
+    m = PROFILE_URL_RE.search(arg)
+    if m:
+        uid = int(m.group("id"))
+        try:
+            user = await ctx.bot.fetch_user(uid)
+            member = None
+            if ctx.guild:
+                member = ctx.guild.get_member(uid) or await ctx.guild.fetch_member(uid)
+            return user, member
+        except Exception:
+            return None, None
+
+    # 3) raw ID in text
     m = re.search(r"(\d{15,25})", arg)
-    uid = int(m.group(1)) if m else None
+    if m:
+        uid = int(m.group(1))
+        try:
+            user = await ctx.bot.fetch_user(uid)  # works globally
+        except Exception:
+            # last resort: maybe cached
+            user = ctx.bot.get_user(uid)
+        member = None
+        if ctx.guild and uid:
+            member = ctx.guild.get_member(uid)
+            if member is None:
+                with contextlib.suppress(Exception):
+                    member = await ctx.guild.fetch_member(uid)
+        return user, member
 
-    # mention object?
-    mention_user = ctx.message.mentions[0] if ctx.message.mentions else None
-    if mention_user:
-        uid = mention_user.id
-
-    if uid is None:
-        # try name lookup (best-effort)
-        member = discord.utils.find(lambda mem: mem.name.lower() == arg.lower(), ctx.guild.members) if ctx.guild else None
+    # 4) fallback: try by name only if in this guild/cache
+    if ctx.guild:
+        member = discord.utils.find(lambda mem: mem.name.lower() == arg.lower(), ctx.guild.members)
         if member:
             return member._user if hasattr(member, "_user") else member, member  # type: ignore
 
-    # fetch user → ensures banner/flags later
-    if uid:
-        user = await ctx.bot.fetch_user(uid)
-        member = None
-        if ctx.guild:
-            member = ctx.guild.get_member(uid) or await ctx.guild.fetch_member(uid)
-        return user, member
-
-    # fallback
-    return ctx.author, ctx.author if isinstance(ctx.author, discord.Member) else None
+    # Could not resolve globally without an ID
+    return None, None
 
 
 class UserInfo(commands.Cog):
@@ -68,7 +95,7 @@ class UserInfo(commands.Cog):
             return await ctx.reply("❌ User not found.")
 
         if not user:
-            return await ctx.reply("❌ User not found.")
+             return await ctx.reply("❌ User not found. Tip: use a **mention**, **ID**, or a **profile URL** like `https://discord.com/users/<id>`.")
 
         # Try refreshing data (for banner, flags, etc.)
         try:
@@ -125,7 +152,7 @@ class UserInfo(commands.Cog):
             roles.sort(key=lambda r: r.position, reverse=True)
 
             if not roles:
-                embed.add_field(name="🎭 Roles", value="_No roles (besides @everyone)_", inline=False)
+                embed.add_field(name="🎭 Roles", value="_No roles_", inline=False)
             else:
                 role_mentions = [f"<@&{r.id}>" for r in roles]
                 # Split into safe 1024-char chunks
