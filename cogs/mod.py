@@ -241,37 +241,33 @@ class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def _log_case(
-        self,
-        ctx: commands.Context,
-        target: discord.abc.User,
-        action: str,                  
-        reason: str,
-        duration: str | None,
-        dm_ok: bool,
-    ):
         """Create a per-guild case number, post the log embed, and index the message location + user_id."""
+
+
+
+
     async def _log_case(
         self,
         ctx: commands.Context,
         target: discord.abc.User,
-        action: str,
+        action: str,                   # "Warn", "Mute", "Kick", "Ban", "Unban", ...
         reason: str,
         duration: str | None,
         dm_ok: bool,
     ) -> int:
-        """Create a per-guild case number, post the log embed, index the message, and return case number."""
-        case_no = -1  # ensure defined even if something fails early
+        """Create a case, post the log embed, index it, and update per-moderator stats."""
+        from sqlalchemy.orm.attributes import flag_modified
+        from datetime import datetime, timezone
 
-        # 1) get next case number + mod-log id
+        # ── 1) Get case number & current mod-log channel id
         async with AsyncSessionLocal() as session:
             cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            case_no = next_case_number(cfg)  # <-- always set here
+            case_no = next_case_number(cfg)
             modlog_id = get_modlog_channel_id(cfg)
             session.add(cfg)
             await session.commit()
 
-        # 2) build the log embed
+        # ── 2) Build the log embed
         action_color = {
             "Warn": COLORS["WARN"],
             "Mute": COLORS["MUTE"],
@@ -282,21 +278,21 @@ class Moderation(commands.Cog):
             "Unban": COLORS["UNBAN"],
         }.get(action, COLORS["INFO"])
 
-        embed = discord.Embed(
-            color=action_color,
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.set_author(
-            name=f"Case {case_no} | {action} | {getattr(target, 'name', str(target))}",
-            icon_url=(target.display_avatar.url if getattr(target, "display_avatar", None) else discord.Embed.Empty),
-        )
-        embed.add_field(name="User", value=f"{getattr(target, 'mention', str(target))} | `{getattr(target, 'id', '')}`", inline=True)
+        embed = discord.Embed(color=action_color, timestamp=datetime.now(timezone.utc))
+        author_kwargs = {
+            "name": f"Case {case_no} | {action} | {getattr(target, 'name', str(target))}"
+        }
+        icon = getattr(getattr(target, "display_avatar", None), "url", None)
+        if icon:
+            author_kwargs["icon_url"] = icon
+        embed.set_author(**author_kwargs)
+        embed.add_field(name="User", value=f"{getattr(target, 'mention', str(target))} (`{getattr(target, 'id', '')}`)", inline=True)
         embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
         embed.add_field(name="Reason", value=(reason[:1024] or "No reason provided"), inline=False)
         if duration:
             embed.add_field(name="Duration", value=duration, inline=True)
 
-        # 3) resolve log channel and send
+        # ── 3) Send to mod-log (or current channel)
         channel = None
         if modlog_id:
             channel = ctx.guild.get_channel(modlog_id) or self.bot.get_channel(modlog_id)
@@ -306,28 +302,47 @@ class Moderation(commands.Cog):
                 except Exception:
                     channel = None
 
-            message_obj = await (channel or ctx.channel).send(embed=embed)
+        message_obj = await (channel or ctx.channel).send(embed=embed)
 
-            # 4) index this case → (channel, message, user)
-            async with AsyncSessionLocal() as session:
-                cfg = await get_guild_cfg(session, str(ctx.guild.id))
-                _set_case_index_entry(cfg, case_no, message_obj.channel.id, message_obj.id, getattr(target, "id", None))
-                session.add(cfg)
-                await session.commit()
+        # ── 4) Index case message location + user id, and UPDATE modstats (merge-safe)
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, str(ctx.guild.id))
 
-            # 5) short summary back to the invoker (embed)
-            past_map = {"Warn": "warned", "Mute": "muted", "Timeout": "timed out", "Unmute": "unmuted", "Kick": "kicked", "Ban": "banned", "Unban": "unbanned"}
-            past = past_map.get(action, action.lower() + "ed")
-            note = "DM sent." if dm_ok else "DM failed."
-            summary = mkembed(
-                title=f"{getattr(target, 'name', str(target))} was {past}",
-                desc=(f"Reason: {reason}" + (f"\nDuration: {duration}" if duration else "")) + f"\n{note}",
-                color=action_color,
-            )
-            summary.set_footer(text=f"Case {case_no} • Moderator: {ctx.author}")
-            await ctx.send(embed=summary)
+            # index the case
+            _set_case_index_entry(cfg, case_no, message_obj.channel.id, message_obj.id, getattr(target, "id", None))
 
-            return case_no
+            # ---- merge modstats ----
+            cfg.modules = dict(cfg.modules or {})  # copy to avoid shared refs
+            modstats = dict(cfg.modules.get("modstats", {}))
+
+            mod_id = str(ctx.author.id)
+            entry = dict(modstats.get(mod_id, {}))
+            actions_list = list(entry.get("actions", []))
+            actions_list.append({
+                "type": action.lower(),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            entry["actions"] = actions_list
+            modstats[mod_id] = entry
+            cfg.modules["modstats"] = modstats
+
+            flag_modified(cfg, "modules")
+            session.add(cfg)
+            await session.commit()
+
+        # ── 5) Summary back to the invoker
+        past_map = {"Warn": "warned", "Mute": "muted", "Timeout": "timed out", "Unmute": "unmuted", "Kick": "kicked", "Ban": "banned", "Unban": "unbanned"}
+        past = past_map.get(action, action.lower() + "ed")
+        note = "DM sent." if dm_ok else "DM failed."
+        summary = mkembed(
+            title=f"{getattr(target, 'name', str(target))} was {past}",
+            desc=(f"Reason: {reason}" + (f"\nDuration: {duration}" if duration else "")) + f"\n{note}",
+            color=action_color,
+        )
+        summary.set_footer(text=f"Case {case_no} • Moderator: {ctx.author}")
+        await ctx.send(embed=summary)
+
+        return case_no
 
 
 
