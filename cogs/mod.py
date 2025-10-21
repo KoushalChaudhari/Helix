@@ -387,40 +387,33 @@ class Moderation(commands.Cog):
 # =============================================
     @commands.command(name="warn")
     @commands.has_permissions(manage_messages=True)
-    async def warn(self, ctx, member: discord.Member, *, reason="No reason provided"):
-        """Warn a user and store the warning."""
-        if member.bot or member == ctx.author:
-            return await ctx.reply("Invalid target.")
+    async def warn(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided."):
+        """Warn a user (DMs them the reason and logs the action)."""
+        if member == ctx.author:
+            return await ctx.reply(embed=mkembed("❌ You can’t warn yourself.", color=COLORS["ERROR"]))
+        if member.bot:
+            return await ctx.reply(embed=mkembed("❌ You can’t warn bots.", color=COLORS["ERROR"]))
 
-        # DM first
+        # Build the DM embed
+        dm_embed = discord.Embed(
+            title=f"⚠️ You have been warned in {ctx.guild.name}!",
+            color=COLORS["WARN"],
+            timestamp=datetime.now(timezone.utc),
+        )
+        dm_embed.add_field(name="Reason", value=reason, inline=False)
+
+        # Send DM
         dm_ok = True
         try:
-            await member.send(f"You were **warned** in **{ctx.guild.name}**.\nReason: {reason}")
+            await member.send(embed=dm_embed)
+        except discord.Forbidden:
+            dm_ok = False
         except Exception:
             dm_ok = False
 
-        # Store the warning in GuildConfig.modules JSON
-        async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            cfg.modules = cfg.modules or {}
-            warns = cfg.modules.get("warns", {})
-
-            # append new warning
-            user_warns = warns.get(str(member.id), [])
-            user_warns.append({
-                "reason": reason,
-                "moderator": str(ctx.author.id),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            warns[str(member.id)] = user_warns
-            cfg.modules["warns"] = warns
-
-            flag_modified(cfg, "modules")  # 👈 critical for nested JSON
-            session.add(cfg)
-            await session.commit()
-
+        # Log case to modlog
         await self._log_case(ctx, member, "Warn", reason, None, dm_ok)
-        # _log_case sends the action embed to the invoking channel; no additional reply needed.
+
 
 
 
