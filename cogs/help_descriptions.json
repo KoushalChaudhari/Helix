@@ -1,68 +1,297 @@
 {
   "categories": {
     "Core": {
-      "desc": "General bot commands and configuration.",
-      "commands": ["help", "ping", "uptime", "invite", "about", "stats", "prefix", "feedback", "bug"]
+      "desc": "General commands for configuration, info, and diagnostics.",
+      "commands": [
+        "help",
+        "helpui",
+        "helprefresh",
+        "ping",
+        "uptime",
+        "invite",
+        "about",
+        "stats",
+        "prefix",
+        "feedback",
+        "bug"
+      ]
     },
     "Moderation": {
-      "desc": "Moderation and case management tools.",
-      "commands": ["warn", "warns", "clearwarns", "kick", "ban", "unban", "mute", "unmute", "timeout", "reason", "duration", "purge", "clean", "lock", "unlock", "slowmode", "broadcast"]
+      "desc": "Moderation tools, case edits, channel controls, and cleanup.",
+      "commands": [
+        "modlog",
+        "warn",
+        "warns",
+        "clearwarns",
+        "kick",
+        "ban",
+        "unban",
+        "mute",
+        "unmute",
+        "timeout",
+        "reason",
+        "duration",
+        "purge",
+        "clean",
+        "lock",
+        "unlock",
+        "slowmode"
+      ]
+    },
+    "Fun": {
+      "desc": "Lightweight entertainment and content.",
+      "commands": [
+        "gif"
+      ]
     }
   },
+
   "commands": {
     "help": {
       "brief": "Show help for commands or categories.",
-      "usage": ["{p}help", "{p}help moderation", "{p}help ban"]
-    },
-    "ping": {
-      "brief": "Check the bot’s latency.",
-      "usage": ["{p}ping"]
-    },
-    "uptime": {
-      "brief": "Show how long the bot has been online.",
-      "usage": ["{p}uptime"]
-    },
-    "invite": {
-      "brief": "Get the bot’s invite link.",
-      "usage": ["{p}invite"]
-    },
-    "about": {
-      "brief": "Show information about the bot.",
-      "usage": ["{p}about"]
-    },
-    "stats": {
-      "brief": "Display bot/system statistics.",
-      "usage": ["{p}stats"]
-    },
-    "prefix": {
-      "brief": "View or change the server prefix.",
-      "usage": ["{p}prefix", "{p}prefix ?"]
-    },
-    "feedback": {
-      "brief": "Send feedback to the developer.",
-      "usage": ["{p}feedback Your bot is awesome!"]
-    },
-    "bug": {
-      "brief": "Report a bug to the developer.",
-      "usage": ["{p}bug The warn command failed to DM."]
+      "desc": "Displays an overview of categories, or detailed info for a given category/command.",
+      "usage": [
+        "{p}help",
+        "{p}help moderation",
+        "{p}help ban"
+      ],
+      "subcommands": [
+        {
+          "name": "overview",
+          "brief": "List all categories and their commands.",
+          "usage": ["{p}help"]
+        },
+        {
+          "name": "category",
+          "brief": "Show commands in a category with short descriptions.",
+          "usage": ["{p}help Moderation", "{p}help Core"]
+        },
+        {
+          "name": "command",
+          "brief": "Show usage, aliases, and details for a command.",
+          "usage": ["{p}help ban", "{p}help purge"]
+        }
+      ]
     },
 
-    "warn": { "brief": "Warn a user and log the case.", "usage": ["{p}warn @user Spamming"] },
-    "warns": { "brief": "View warnings for a user.", "usage": ["{p}warns", "{p}warns @user"] },
-    "clearwarns": { "brief": "Clear all warnings for a user.", "usage": ["{p}clearwarns @user"] },
-    "kick": { "brief": "Kick a member from the server.", "usage": ["{p}kick @user Reason"] },
-    "ban": { "brief": "Ban a member (optional prune days).", "usage": ["{p}ban @user Reason 7"] },
-    "unban": { "brief": "Unban a user by ID or tag.", "usage": ["{p}unban 1234567890", "{p}unban Name#1234"] },
-    "mute": { "brief": "Timeout (mute) a member.", "usage": ["{p}mute @user 10m Spamming"] },
-    "unmute": { "brief": "Remove a timeout.", "usage": ["{p}unmute @user"] },
-    "timeout": { "brief": "Apply/change a timeout.", "usage": ["{p}timeout @user 30m Flooding"] },
-    "reason": { "brief": "Update a case reason.", "usage": ["{p}reason 5 Updated reason"] },
-    "duration": { "brief": "Update a mute/timeout duration.", "usage": ["{p}duration 5 45m"] },
-    "purge": { "brief": "Bulk delete messages.", "usage": ["{p}purge 50", "{p}purge 100 contains:spam"] },
-    "clean": { "brief": "Delete bot + command messages.", "usage": ["{p}clean", "{p}clean 100"] },
-    "lock": { "brief": "Lock a channel for @everyone.", "usage": ["{p}lock #general Spam attack"] },
-    "unlock": { "brief": "Unlock a channel.", "usage": ["{p}unlock #general"] },
-    "slowmode": { "brief": "Set/disable channel slowmode.", "usage": ["{p}slowmode 5", "{p}slowmode off"] },
-    "broadcast": { "brief": "Send an announcement embed.", "usage": ["{p}broadcast Maintenance in 10 minutes!"] }
+    "helpui": {
+      "brief": "Open the interactive Help menu.",
+      "desc": "Opens a dropdown UI to browse categories → commands → example usages.",
+      "usage": ["{p}helpui"]
+    },
+
+    "helprefresh": {
+      "brief": "Reload help data from JSON.",
+      "desc": "Reloads the local help_descriptions.json without restarting the bot (Manage Server required).",
+      "usage": ["{p}helprefresh"]
+    },
+
+    "ping": {
+      "brief": "Check the bot’s latency.",
+      "desc": "Shows the current WebSocket latency in milliseconds.",
+      "usage": ["{p}ping"]
+    },
+
+    "uptime": {
+      "brief": "Show how long the bot has been online.",
+      "desc": "Displays the time elapsed since the last restart.",
+      "usage": ["{p}uptime"]
+    },
+
+    "invite": {
+      "brief": "Get the bot’s invite link (Admin).",
+      "desc": "Sends a button with the OAuth2 invite URL using Administrator permissions.",
+      "usage": ["{p}invite"]
+    },
+
+    "about": {
+      "brief": "Info about Helix.",
+      "desc": "Shows overview, version, developer, library versions, and quick stats.",
+      "usage": ["{p}about"]
+    },
+
+    "stats": {
+      "brief": "Display bot/system statistics.",
+      "desc": "Shows guilds, members, channels, commands loaded, latency, uptime, and CPU/RAM (if available).",
+      "usage": ["{p}stats"]
+    },
+
+    "prefix": {
+      "brief": "View or change the server prefix.",
+      "desc": "Shows the current prefix or sets a new one (requires Manage Server to modify).",
+      "usage": ["{p}prefix", "{p}prefix ?"],
+      "subcommands": [
+        {
+          "name": "show",
+          "brief": "Show the current prefix.",
+          "usage": ["{p}prefix"]
+        },
+        {
+          "name": "set",
+          "brief": "Set a new prefix (≤ 5 chars, no spaces).",
+          "usage": ["{p}prefix !", "{p}prefix $", "{p}prefix >>"]
+        }
+      ]
+    },
+
+    "feedback": {
+      "brief": "Send feedback to the developer.",
+      "desc": "Delivers your suggestion/feedback to the configured channel or the app owner.",
+      "usage": ["{p}feedback Love the new moderation logs!"]
+    },
+
+    "bug": {
+      "brief": "Report a bug to the developer.",
+      "desc": "Sends a bug report to the configured channel or the app owner.",
+      "usage": ["{p}bug Duration didn’t update the actual timeout."]
+    },
+
+    "modlog": {
+      "brief": "Set or view the moderation log channel.",
+      "desc": "Stores the channel where case embeds are posted (per-guild setting).",
+      "usage": ["{p}modlog", "{p}modlog #mod-logs"],
+      "subcommands": [
+        {
+          "name": "show",
+          "brief": "Show the current mod-log channel.",
+          "usage": ["{p}modlog"]
+        },
+        {
+          "name": "set",
+          "brief": "Set the mod-log channel.",
+          "usage": ["{p}modlog #mod-logs"]
+        }
+      ]
+    },
+
+    "warn": {
+      "brief": "Warn a user and log the case.",
+      "desc": "Issues a warning, DMs the user, and logs the case in the mod-log channel.",
+      "usage": ["{p}warn @user Spamming links"]
+    },
+
+    "warns": {
+      "brief": "View warnings for a user.",
+      "desc": "Shows all stored warnings for the user (per-guild).",
+      "usage": ["{p}warns", "{p}warns @user"]
+    },
+
+    "clearwarns": {
+      "brief": "Clear all warnings for a user.",
+      "desc": "Deletes the warning history for the specified user.",
+      "usage": ["{p}clearwarns @user"]
+    },
+
+    "kick": {
+      "brief": "Kick a member.",
+      "desc": "Kicks the member, DMs them the reason (if possible), and logs the case.",
+      "usage": ["{p}kick @user Rule violation"]
+    },
+
+    "ban": {
+      "brief": "Ban a member (optional prune days).",
+      "desc": "Bans the member, optionally deleting up to 7 days of their messages.",
+      "usage": ["{p}ban @user Harassment 7"],
+      "subcommands": [
+        {
+          "name": "ban",
+          "brief": "Ban with optional message prune.",
+          "usage": ["{p}ban @user Reason", "{p}ban @user Reason 7"]
+        }
+      ]
+    },
+
+    "unban": {
+      "brief": "Unban a user by ID or tag.",
+      "desc": "Removes a ban using the user’s ID or username#discriminator.",
+      "usage": ["{p}unban 123456789012345678", "{p}unban Username#1234"]
+    },
+
+    "mute": {
+      "brief": "Timeout (mute) a member.",
+      "desc": "Applies a Discord timeout for a duration. Examples: 10s, 5m, 1h, 2d.",
+      "usage": ["{p}mute @user 10m Spamming", "{p}mute @user 2h Toxic behavior"]
+    },
+
+    "unmute": {
+      "brief": "Remove a timeout.",
+      "desc": "Clears an active timeout from a member.",
+      "usage": ["{p}unmute @user"]
+    },
+
+    "timeout": {
+      "brief": "Apply or change a timeout.",
+      "desc": "Applies a timeout or updates an existing one. Accepts time units: s, m, h, d.",
+      "usage": ["{p}timeout @user 30m Flooding chat"]
+    },
+
+    "reason": {
+      "brief": "Update a case reason.",
+      "desc": "Edits the reason text for a logged case and updates the stored record.",
+      "usage": ["{p}reason 5 Updated reason after review"]
+    },
+
+    "duration": {
+      "brief": "Update a mute/timeout duration.",
+      "desc": "Changes the duration of a previously timed-out member and updates the live timeout.",
+      "usage": ["{p}duration 5 45m", "{p}duration 12 2h"]
+    },
+
+    "purge": {
+      "brief": "Bulk delete messages with filters.",
+      "desc": "Deletes messages using rich filters (skips pinned, excludes the command invocation, and posts a summary). Max recommended 1000.",
+      "usage": ["{p}purge 100 any", "{p}purge 50 user @User", "{p}purge 75 match spam"],
+      "subcommands": [
+        { "name": "any", "brief": "Delete any message type.", "usage": ["{p}purge 100 any"] },
+        { "name": "user", "brief": "Delete messages from a specific user.", "usage": ["{p}purge 50 user @User", "{p}purge 50 user 123456789012345678"] },
+        { "name": "match", "brief": "Delete messages that contain text.", "usage": ["{p}purge 75 match spam"] },
+        { "name": "startswith", "brief": "Delete messages that start with text.", "usage": ["{p}purge 75 startswith !"] },
+        { "name": "endswith", "brief": "Delete messages that end with text.", "usage": ["{p}purge 75 endswith ?"] },
+        { "name": "not", "brief": "Delete messages not containing text.", "usage": ["{p}purge 75 not spoilers"] },
+        { "name": "after", "brief": "Delete messages after a message (ID/link).", "usage": ["{p}purge 100 after 123456789012345678", "{p}purge 100 after https://discord.com/channels/..../123456789012345678"] },
+        { "name": "links", "brief": "Delete messages that contain links.", "usage": ["{p}purge 100 links"] },
+        { "name": "invites", "brief": "Delete messages that contain invite links.", "usage": ["{p}purge 100 invites"] },
+        { "name": "images", "brief": "Delete messages that contain image attachments.", "usage": ["{p}purge 50 images"] },
+        { "name": "mentions", "brief": "Delete messages that contain mentions.", "usage": ["{p}purge 100 mentions"] },
+        { "name": "embeds", "brief": "Delete messages that contain embeds.", "usage": ["{p}purge 100 embeds"] },
+        { "name": "bots", "brief": "Delete messages sent by bots.", "usage": ["{p}purge 200 bots"] },
+        { "name": "humans", "brief": "Delete messages sent by users (non-bots).", "usage": ["{p}purge 200 humans"] },
+        { "name": "text", "brief": "Delete messages that contain text (non-attachments only).", "usage": ["{p}purge 150 text"] }
+      ]
+    },
+
+    "clean": {
+      "brief": "Delete bot & command messages.",
+      "desc": "Erases Helix’s messages and command invocations in the channel. Your implementation auto-detects the current prefix.",
+      "usage": ["{p}clean", "{p}clean 100"]
+    },
+
+    "lock": {
+      "brief": "Lock a channel for @everyone.",
+      "desc": "Temporarily prevents sending messages in a channel until unlocked.",
+      "usage": ["{p}lock", "{p}lock #general Spam wave detected"]
+    },
+
+    "unlock": {
+      "brief": "Unlock a channel.",
+      "desc": "Restores send-message permissions for @everyone in the channel.",
+      "usage": ["{p}unlock", "{p}unlock #general"]
+    },
+
+    "slowmode": {
+      "brief": "Set or disable slowmode.",
+      "desc": "Sets a cooldown (seconds) between messages. Use 'off' to disable.",
+      "usage": ["{p}slowmode 5", "{p}slowmode off"],
+      "subcommands": [
+        { "name": "set", "brief": "Set slowmode in seconds.", "usage": ["{p}slowmode 5", "{p}slowmode 10"] },
+        { "name": "off", "brief": "Disable slowmode.", "usage": ["{p}slowmode off"] }
+      ]
+    },
+
+    "gif": {
+      "brief": "Send a random GIF matching your query.",
+      "desc": "Searches a GIF provider and returns a relevant random GIF.",
+      "usage": ["{p}gif dancing cat", "{p}gif victory"]
+    }
   }
 }
