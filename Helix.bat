@@ -1,20 +1,19 @@
 @echo off
 title JOAT Discord Bot
 echo ================================================
-echo         Launching JOAT Discord Bot...
+echo              Initialising Helix ...
 echo ================================================
 echo.
 
-REM Navigate to the bot directory (change path if needed)
+REM Navigate to the bot directory
 cd /d "%~dp0"
 
-REM Activate the virtual environment
+REM Activate virtual environment
 call .venv\Scripts\activate.bat
 
 REM Start the bot
 python bot.py
 
-REM Keep the window open if bot crashes or stops
 echo.
 echo ================================================
 echo Bot stopped or exited.
