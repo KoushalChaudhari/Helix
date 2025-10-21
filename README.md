@@ -1,5 +1,5 @@
-# 🧠 JOAT Discord Bot [WIP]
-*A multipurpose, database-connected moderation and utility bot built in Python.*
+# 🧬 Helix Discord Bot [WIP]
+*Helix- Where logic meets evolution.*
 
 ---
 
