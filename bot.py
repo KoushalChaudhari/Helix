@@ -79,6 +79,7 @@ EXTENSIONS = [
     "cogs.core",
     "cogs.mod",
     "cogs.fun",
+    "cogs.userinfo",
 ]
 
 async def load_extensions():
@@ -157,3 +158,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
