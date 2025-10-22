@@ -1,160 +1,126 @@
 # bot.py
-from __future__ import annotations
-
-import asyncio
-import logging
 import os
-from typing import Dict
-
+import asyncio
 import discord
 from discord.ext import commands
+from dotenv import load_dotenv
+from db.engine import init_db, AsyncSessionLocal
+from db.models import GuildConfig
 from sqlalchemy import select
 
-# DB imports (adjust if your paths differ)
-from db.engine import AsyncSessionLocal, init_db
-from db.models import Base, GuildConfig
+# ─────────── Load environment variables ───────────
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+APP_ID = os.getenv("APP_ID")
 
-# ---------------------------------------------------------------------
-# Config / Secrets
-# ---------------------------------------------------------------------
-# If you use a config.py that loads .env, import from there:
-try:
-    from config import DISCORD_TOKEN  # Prefer using your existing config loader
-except Exception:
-    DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+# ─────────── Intents & Basic Setup ───────────
+intents = discord.Intents.all()
+intents.message_content = True
+intents.members = True
+intents.presences = False
 
-if not DISCORD_TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is not set. Put it in .env or config.py")
-
-# ---------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-log = logging.getLogger("joat")
-
-# ---------------------------------------------------------------------
-# Intents
-# ---------------------------------------------------------------------
-intents = discord.Intents.default()
-intents.message_content = True      # needed for prefix commands
-intents.members = True              # moderation & member cache
-intents.guilds = True
-
-# ---------------------------------------------------------------------
-# Dynamic Prefix (per-guild)
-# ---------------------------------------------------------------------
-DEFAULT_PREFIX = ";"
-prefix_cache: Dict[str, str] = {}  # guild_id -> prefix
-
-async def load_prefixes() -> None:
-    """Warm in-memory prefix cache from DB."""
-    prefix_cache.clear()
-    async with AsyncSessionLocal() as session:
-        res = await session.execute(select(GuildConfig.guild_id, GuildConfig.prefix))
-        for gid, pref in res.all():
-            prefix_cache[str(gid)] = pref or DEFAULT_PREFIX
-    log.info("⚡ Prefix cache warmed for %d guild(s).", len(prefix_cache))
-
-def get_prefix(bot: commands.Bot, message: discord.Message):
-    """Dynamic per-guild prefix; also supports @mention as prefix."""
-    if not message.guild:
-        return commands.when_mentioned_or(DEFAULT_PREFIX)(bot, message)
-    pref = prefix_cache.get(str(message.guild.id), DEFAULT_PREFIX)
-    return commands.when_mentioned_or(pref)(bot, message)
-
-# ---------------------------------------------------------------------
-# Bot
-# ---------------------------------------------------------------------
-bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
-bot.prefix_cache = prefix_cache  # expose to cogs (e.g., ;prefix command updates this)
-bot.boot_time = None             # set on_ready
-
-# ---------------------------------------------------------------------
-# Cog Loader
-# ---------------------------------------------------------------------
-EXTENSIONS = [
-    "cogs.core",
-    "cogs.mod",
-    "cogs.fun",
-    "cogs.userinfo",
-]
-
-async def load_extensions():
-    for ext in EXTENSIONS:
-        try:
-            await bot.load_extension(ext)
-            log.info("⚙️ Loaded extension: %s", ext)
-        except Exception as e:
-            log.exception("Failed to load extension %s: %s", ext, e)
-
-# ---------------------------------------------------------------------
-# Events
-# ---------------------------------------------------------------------
-@bot.event
-async def on_ready():
-    if bot.boot_time is None:
-        from datetime import datetime, timezone
-        bot.boot_time = datetime.now(timezone.utc)
-
-    # Application id can be useful for invite links in cogs
-    try:
-        app = await bot.application_info()
-        bot.application_id = app.id
-    except Exception:
-        pass
-
-    log.info("✅ Logged in as %s (ID: %s)", bot.user, getattr(bot.user, "id", "N/A"))
-    log.info("🛜 Connected to %d guild(s).", len(bot.guilds))
-    try:
-        await bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name=";help")
+# ─────────── Bot Configuration ───────────
+class HelixBot(commands.Bot):
+    def __init__(self):
+        super().__init__(
+            command_prefix=self.get_prefix,
+            intents=intents,
+            application_id=APP_ID,
+            help_command=None,  # using custom help
         )
-    except Exception:
-        pass
+        self.boot_time = discord.utils.utcnow()
+        self.prefix_cache = {}
+        self.initial_extensions = [
+            "cogs.core",
+            "cogs.mod",
+            "cogs.logs",
+            "cogs.userinfo",
+        ]
 
-@bot.event
-async def on_command_error(ctx: commands.Context, error: commands.CommandError):
-    # Graceful, minimal error reporting in chat; details go to log
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ You don't have permission to use that.")
-        return
-    if isinstance(error, commands.BotMissingPermissions):
-        await ctx.send("❌ I’m missing required permissions to do that here.")
-        return
-    if isinstance(error, commands.CommandNotFound):
-        return  # silently ignore unknown commands (common with prefix changes)
-    if isinstance(error, commands.BadArgument):
-        await ctx.send(f"❌ Bad argument: {error}")
-        return
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ Missing argument: `{error.param.name}`")
-        return
+    async def setup_hook(self):
+        # Initialize database
+        await init_db()
 
-    log.exception("Unhandled command error in %s: %s", ctx.command, error)
-    try:
-        await ctx.send(f"⚠️ An unexpected error occurred: `{type(error).__name__}`")
-    except Exception:
-        pass
+        # Load all extensions safely
+        for ext in self.initial_extensions:
+            try:
+                await self.load_extension(ext)
+                print(f"[COG] ✅ Loaded {ext}")
+            except Exception as e:
+                print(f"[COG] ❌ Failed to load {ext}: {e}")
 
-# ---------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------
+        print(f"[BOT] ✅ All cogs loaded successfully.")
+
+    async def get_prefix(self, message):
+        if not message.guild:
+            return ";"
+        gid = str(message.guild.id)
+        if gid in self.prefix_cache:
+            return self.prefix_cache[gid]
+
+        # Load prefix from DB
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == gid))
+            cfg = res.scalar_one_or_none()
+            if cfg and cfg.prefix:
+                prefix = cfg.prefix
+            else:
+                prefix = ";"
+            self.prefix_cache[gid] = prefix
+            return prefix
+
+    async def on_ready(self):
+        print(f"\n{'='*40}")
+        print(f"💠 Logged in as: {self.user} (ID: {self.user.id})")
+        print(f"🌐 Connected to {len(self.guilds)} guild(s)")
+        print(f"💫 Prefix cache size: {len(self.prefix_cache)}")
+        print(f"✅ Helix is online and ready!")
+        print(f"{'='*40}\n")
+
+        # Set bot presence
+        await self.change_presence(
+            activity=discord.Game(name="with evolution | ;help"),
+            status=discord.Status.online
+        )
+
+    async def on_command_error(self, ctx, error):
+        """Cleaner user-friendly error messages."""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send(embed=discord.Embed(
+                title="❌ Permission Denied",
+                description="You don’t have permission to use this command.",
+                color=discord.Color.red()
+            ))
+        elif isinstance(error, commands.BotMissingPermissions):
+            await ctx.send(embed=discord.Embed(
+                title="🤖 Missing Bot Permissions",
+                description="I don’t have enough permissions to do that.",
+                color=discord.Color.red()
+            ))
+        elif isinstance(error, commands.CommandNotFound):
+            return  # ignore unknown commands silently
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send(embed=discord.Embed(
+                title="⚠️ Missing Argument",
+                description=f"Usage: `{ctx.prefix}{ctx.command.name} {ctx.command.signature}`",
+                color=discord.Color.gold()
+            ))
+        else:
+            await ctx.send(embed=discord.Embed(
+                title="❌ Error",
+                description=f"An unexpected error occurred: `{type(error).__name__}`\n{error}",
+                color=discord.Color.red()
+            ))
+            raise error  # still print full traceback for devs
+
+
+# ─────────── Main Entrypoint ───────────
 async def main():
-    # 1) Ensure DB is ready
-    await init_db(Base.metadata)
-    log.info("📦 DB initialized / migrations applied.")
-
-    # 2) Warm prefix cache before loading cogs
-    await load_prefixes()
-
-    # 3) Load cogs
-    await load_extensions()
-
-    # 4) Start the bot
-    await bot.start(DISCORD_TOKEN)
+    async with HelixBot() as bot:
+        await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[EXIT] Bot stopped manually.")
