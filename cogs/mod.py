@@ -1,174 +1,82 @@
 # cogs/mod.py
 from __future__ import annotations
-
-import contextlib
-from email.mime import message
-import discord
-import asyncio
 import re
 import uuid
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any
 
-from datetime import datetime, timezone, timedelta  
-from typing import Optional
+import discord
 from discord.ext import commands
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
+
 from db.engine import AsyncSessionLocal
 from db.models import GuildConfig
-from config import PREFIX
 
+# --------- Theme / helpers ----------
+HELIX_PRIMARY = discord.Color.from_rgb(110, 82, 255)
+HELIX_SUCCESS = discord.Color.from_rgb(60, 180, 150)
+HELIX_WARN = discord.Color.gold()
+HELIX_ERROR = discord.Color.from_rgb(255, 85, 160)
+FOOTER_TEXT = "⚙️ Helix Moderation System"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers: per-guild config (stored compactly in GuildConfig.modules JSON)
-# ──────────────────────────────────────────────────────────────────────────────
-async def get_guild_cfg(session, guild_id: str) -> GuildConfig:
-    """Fetch-or-create the GuildConfig row for this guild."""
-    res = await session.execute(
-        select(GuildConfig).where(GuildConfig.guild_id == guild_id)
-    )
+def mkembed(title: str, desc: str = "", color: discord.Color = HELIX_PRIMARY) -> discord.Embed:
+    emb = discord.Embed(title=title, description=desc or "", color=color, timestamp=datetime.now(timezone.utc))
+    return emb
+
+async def send_simple(ctx: commands.Context, title: str, desc: str = "", color: discord.Color = HELIX_PRIMARY):
+    e = mkembed(title, desc, color)
+    try:
+        e.set_footer(text=FOOTER_TEXT, icon_url=(ctx.bot.user.display_avatar.url if getattr(ctx.bot.user, "display_avatar", None) else None))
+    except Exception:
+        pass
+    return await ctx.send(embed=e)
+
+# --------- DB helpers ----------
+async def get_guild_cfg(session, guild_id: int) -> GuildConfig:
+    gid = str(guild_id)
+    res = await session.execute(select(GuildConfig).where(GuildConfig.guild_id == gid))
     cfg = res.scalar_one_or_none()
     if not cfg:
-        cfg = GuildConfig(
-            id=uuid.uuid4().hex,
-            guild_id=guild_id,
-            prefix=";",
-            modules={},  # we store tiny state here (modlog channel, counters, index)
-        )
+        cfg = GuildConfig(id=uuid.uuid4().hex, guild_id=gid, prefix=";", modules={})
         session.add(cfg)
         await session.commit()
     if cfg.modules is None:
         cfg.modules = {}
     return cfg
 
-
-def get_modlog_channel_id(cfg: GuildConfig) -> Optional[int]:
-    raw = (cfg.modules or {}).get("modlog_channel_id")
-    return int(raw) if raw else None
-
-
-def set_modlog_channel_id(cfg: GuildConfig, channel_id: int) -> None:
+def _next_case_seq(cfg: GuildConfig) -> int:
     mods = cfg.modules or {}
-    mods["modlog_channel_id"] = str(channel_id)
+    seq = int(mods.get("case_seq", 0)) + 1
+    mods["case_seq"] = str(seq)
     cfg.modules = mods
-    flag_modified(cfg, "modules")  # ensure JSON mutation is persisted
+    flag_modified(cfg, "modules")
+    return seq
 
-
-def next_case_number(cfg: GuildConfig) -> int:
-    mods = cfg.modules or {}
-    n = int(mods.get("case_seq", 0)) + 1
-    mods["case_seq"] = str(n)
-    cfg.modules = mods
-    flag_modified(cfg, "modules")  # ensure JSON mutation is persisted
-    return n
-
-
-def _get_case_index(cfg: GuildConfig) -> dict:
-    """Return the per-guild {case_no: {c: channel_id, m: message_id}} map."""
+def _index_case(cfg: GuildConfig, case_no: int, channel_id: int, message_id: int, user_id: Optional[int] = None):
     mods = cfg.modules or {}
     idx = mods.get("case_index") or {}
-    return idx if isinstance(idx, dict) else {}
-
-def _set_case_index_entry(cfg: GuildConfig, case_no: int, channel_id: int, message_id: int, user_id: int | None = None) -> None:
-    mods = cfg.modules or {}
-    idx = mods.get("case_index") or {}
-    entry = {"c": str(channel_id), "m": str(message_id)}
+    if not isinstance(idx, dict):
+        idx = {}
+    idx[str(case_no)] = {"c": str(channel_id), "m": str(message_id)}
     if user_id is not None:
-        entry["u"] = str(user_id)  
-    idx[str(case_no)] = entry
+        idx[str(case_no)]["u"] = str(user_id)
     mods["case_index"] = idx
     cfg.modules = mods
     flag_modified(cfg, "modules")
 
+def _get_modlog_id(mods: Dict[str, Any]) -> Optional[int]:
+    v = mods.get("modlog_channel_id")
+    if not v:
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
 
-def _find_field(embed: discord.Embed, name: str) -> Optional[int]:
-    for i, f in enumerate(embed.fields):
-        if f.name.lower() == name.lower():
-            return i
-    return None
-
-def _current_prefix(ctx: commands.Context) -> str:
-    if hasattr(ctx.bot, "prefix_cache") and ctx.guild:
-        return ctx.bot.prefix_cache.get(str(ctx.guild.id), DEFAULT_PREFIX)
-    return DEFAULT_PREFIX
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Time helpers
-# ──────────────────────────────────────────────────────────────────────────────
-_UNIT_MS = {"s": 1_000, "m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
-
-INVITE_RE = re.compile(r"(discord\.gg/|discord\.com/invite/)", re.IGNORECASE)
-URL_RE    = re.compile(r"https?://", re.IGNORECASE)
-
-def _is_image_attachment(a: discord.Attachment) -> bool:
-    return any(a.filename.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
-
-def _mk_filter(mode: str, value: str | None):
-    mode = mode.lower()
-
-    if mode == "any":
-        return lambda m: True
-
-    if mode == "user":
-        # value must be a user mention/id/resolvable via ctx.guild
-        # we return a placeholder check; the command will bind the resolved member id
-        uid = int(value)
-        return lambda m: m.author.id == uid
-
-    if mode == "match":
-        needle = (value or "").lower()
-        return lambda m: (m.content or "").lower().find(needle) != -1
-
-    if mode == "startswith":
-        needle = (value or "").lower()
-        return lambda m: (m.content or "").lower().startswith(needle)
-
-    if mode == "endswith":
-        needle = (value or "").lower()
-        return lambda m: (m.content or "").lower().endswith(needle)
-
-    if mode == "not":
-        needle = (value or "").lower()
-        return lambda m: needle not in (m.content or "").lower()
-
-    if mode == "links":
-        return lambda m: URL_RE.search(m.content or "") is not None
-
-    if mode == "invites":
-        return lambda m: INVITE_RE.search(m.content or "") is not None
-
-    if mode == "images":
-        return lambda m: any(_is_image_attachment(a) for a in m.attachments)
-
-    if mode == "mentions":
-        return lambda m: bool(m.mentions or m.role_mentions or m.mention_everyone)
-
-    if mode == "embeds":
-        return lambda m: bool(m.embeds)
-
-    if mode == "bots":
-        return lambda m: m.author.bot
-
-    if mode == "humans":
-        return lambda m: not m.author.bot
-
-    if mode == "text":
-        return lambda m: bool(m.content and m.content.strip())
-
-    # fallback: treat unknown as any
-    return lambda m: True
-
-
-def _format_mode(mode: str, value: str | None) -> str:
-    if value:
-        return f"{mode} `{value}`"
-    return mode
-
-
+# --------- utility parsers -----------
+_UNIT_MS = {"s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
 def parse_duration_ms(s: str) -> Optional[int]:
-    """
-    Parse "1h30m", "45m", "2d", "90" (seconds) → milliseconds.
-    Returns None on invalid input.
-    """
     if not s:
         return None
     s = s.strip().lower()
@@ -189,7 +97,6 @@ def parse_duration_ms(s: str) -> Optional[int]:
         total += int(num) * _UNIT_MS["s"]
     return total or None
 
-
 def humanize_ms(ms: int) -> str:
     parts = []
     for unit, size in (("w", 604800000), ("d", 86400000), ("h", 3600000), ("m", 60000), ("s", 1000)):
@@ -198,271 +105,156 @@ def humanize_ms(ms: int) -> str:
             parts.append(f"{n}{unit}")
     return "".join(parts) or "0s"
 
+def _resolve_member_by_query(guild: discord.Guild, query: str) -> Optional[discord.Member]:
+    if not guild:
+        return None
+    # mention/id
+    m = re.search(r"(\d{15,25})", query)
+    if m:
+        try:
+            uid = int(m.group(1))
+            mem = guild.get_member(uid)
+            if mem:
+                return mem
+        except Exception:
+            pass
+    # username#discrim
+    if "#" in query:
+        try:
+            name, discrim = query.rsplit("#", 1)
+            mem = discord.utils.get(guild.members, name=name, discriminator=discrim)
+            if mem:
+                return mem
+        except Exception:
+            pass
+    # exact display/name
+    mem = discord.utils.find(lambda mm: (mm.name and mm.name.lower() == query.lower()) or (mm.display_name and mm.display_name.lower() == query.lower()), guild.members)
+    if mem:
+        return mem
+    # partial
+    mem = discord.utils.find(lambda mm: query.lower() in (mm.name or "").lower() or (mm.display_name and query.lower() in mm.display_name.lower()), guild.members)
+    return mem
 
-
-# ====== Standard colors for all moderation responses ======
-COLORS = {
-    "INFO": discord.Color.blurple(),
-    "SUCCESS": discord.Color.green(),
-    "WARNING": discord.Color.gold(),
-    "ERROR": discord.Color.red(),
-
-    # action colors (used by _log_case and action summaries)
-    "WARN": discord.Color.gold(),
-    "MUTE": discord.Color.orange(),
-    "UNMUTE": discord.Color.green(),
-    "KICK": discord.Color.red(),
-    "BAN": discord.Color.dark_red(),
-    "UNBAN": discord.Color.green(),
-}
-
-def mkembed(title: str, desc: str | None = None, *, color: discord.Color | None = None) -> discord.Embed:
-    """Create a consistent embed with timestamp."""
-    return discord.Embed(
-        title=title,
-        description=desc or "",
-        color=color or COLORS["INFO"],
-        timestamp=datetime.now(timezone.utc),
-    )
-
-async def send_info(ctx, title, desc=""):   return await ctx.send(embed=mkembed(title, desc, color=COLORS["INFO"]))
-async def send_ok(ctx, title, desc=""):     return await ctx.send(embed=mkembed(title, desc, color=COLORS["SUCCESS"]))
-async def send_warn(ctx, title, desc=""):   return await ctx.send(embed=mkembed(title, desc, color=COLORS["WARNING"]))
-async def send_err(ctx, title, desc=""):    return await ctx.send(embed=mkembed(title, desc, color=COLORS["ERROR"]))
-
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Moderation Cog
-# ──────────────────────────────────────────────────────────────────────────────
-class Moderation(commands.Cog):
-    """Moderation: warn + mod-log config + edit logged cases (no case DB rows)."""
-
+# --------- Moderation Cog ----------
+class Moderation(commands.Cog, name="Moderation"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-        """Create a per-guild case number, post the log embed, and index the message location + user_id."""
-
-
-
-
-    async def _log_case(
-        self,
-        ctx: commands.Context,
-        target: discord.abc.User,
-        action: str,                   # "Warn", "Mute", "Kick", "Ban", "Unban", ...
-        reason: str,
-        duration: str | None,
-        dm_ok: bool,
-    ) -> int:
-        """Create a case, post the log embed, index it, and update per-moderator stats."""
-        from sqlalchemy.orm.attributes import flag_modified
-        from datetime import datetime, timezone
-
-        # ── 1) Get case number & current mod-log channel id
+    # central case logger (posts to mod-log channel if set)
+    async def _log_case(self, ctx: commands.Context, target: discord.abc.User, action: str, reason: str, duration: Optional[str], dm_ok: bool) -> int:
         async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            case_no = next_case_number(cfg)
-            modlog_id = get_modlog_channel_id(cfg)
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            case_no = _next_case_seq(cfg)
+            modlog_id = _get_modlog_id(cfg.modules or {})
             session.add(cfg)
             await session.commit()
 
-        # ── 2) Build the log embed
-        action_color = {
-            "Warn": COLORS["WARN"],
-            "Mute": COLORS["MUTE"],
-            "Timeout": COLORS["MUTE"],
-            "Unmute": COLORS["UNMUTE"],
-            "Kick": COLORS["KICK"],
-            "Ban": COLORS["BAN"],
-            "Unban": COLORS["UNBAN"],
-        }.get(action, COLORS["INFO"])
-
-        embed = discord.Embed(color=action_color, timestamp=datetime.now(timezone.utc))
-        author_kwargs = {
-            "name": f"Case {case_no} | {action} | {getattr(target, 'name', str(target))}"
-        }
-        icon = getattr(getattr(target, "display_avatar", None), "url", None)
-        if icon:
-            author_kwargs["icon_url"] = icon
-        embed.set_author(**author_kwargs)
-        embed.add_field(name="User", value=f"{getattr(target, 'mention', str(target))} (`{getattr(target, 'id', '')}`)", inline=True)
+        color = HELIX_PRIMARY
+        embed = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
+        try:
+            embed.set_author(name=f"Case {case_no} • {action} • {getattr(target,'name', str(target))}", icon_url=(getattr(target, "display_avatar", None).url if getattr(target, "display_avatar", None) else None))
+        except Exception:
+            embed.set_author(name=f"Case {case_no} • {action} • {getattr(target,'name', str(target))}")
+        embed.add_field(name="User", value=f"{getattr(target,'mention', str(target))} (`{getattr(target,'id','')}`)", inline=True)
         embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
-        embed.add_field(name="Reason", value=(reason[:1024] or "No reason provided"), inline=False)
+        embed.add_field(name="Reason", value=(reason or "No reason provided")[:1024], inline=False)
         if duration:
             embed.add_field(name="Duration", value=duration, inline=True)
 
-        # ── 3) Send to mod-log (or current channel)
-        channel = None
+        send_channel = None
         if modlog_id:
-            channel = ctx.guild.get_channel(modlog_id) or self.bot.get_channel(modlog_id)
-            if channel is None:
-                try:
-                    channel = await ctx.guild.fetch_channel(modlog_id)
-                except Exception:
-                    channel = None
+            try:
+                send_channel = ctx.guild.get_channel(modlog_id) or self.bot.get_channel(modlog_id)
+                if send_channel is None:
+                    send_channel = await ctx.guild.fetch_channel(modlog_id)  # type: ignore
+            except Exception:
+                send_channel = None
+        send_channel = send_channel or ctx.channel
+        msg = await send_channel.send(embed=embed)
 
-        message_obj = await (channel or ctx.channel).send(embed=embed)
-
-        # ── 4) Index case message location + user id, and UPDATE modstats (merge-safe)
+        # index case for later edits
         async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            _index_case(cfg, case_no, msg.channel.id, msg.id, getattr(target, "id", None))
+            session.add(cfg)
+            await session.commit()
 
-            # index the case
-            _set_case_index_entry(cfg, case_no, message_obj.channel.id, message_obj.id, getattr(target, "id", None))
+        summary = mkembed(f"{getattr(target,'name', str(target))} — {action}", f"Reason: {reason}" + (f"\nDuration: {duration}" if duration else "") + ("\nDM sent." if dm_ok else "\nDM failed."), HELIX_PRIMARY)
+        summary.set_footer(text=f"Case {case_no} • Moderator: {ctx.author}", icon_url=(self.bot.user.display_avatar.url if getattr(self.bot.user,"display_avatar",None) else None))
+        await ctx.send(embed=summary)
+        return case_no
 
-            # ---- merge modstats ----
-            cfg.modules = dict(cfg.modules or {})  # copy to avoid shared refs
-            modstats = dict(cfg.modules.get("modstats", {}))
-
-            mod_id = str(ctx.author.id)
-            entry = dict(modstats.get(mod_id, {}))
-            actions_list = list(entry.get("actions", []))
-            actions_list.append({
-                "type": action.lower(),
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-            entry["actions"] = actions_list
-            modstats[mod_id] = entry
-            cfg.modules["modstats"] = modstats
-
+    # ---------- modlog command ----------
+    @commands.command(name="modlog")
+    @commands.has_permissions(manage_guild=True)
+    async def modlog(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            cur = (cfg.modules or {}).get("modlog_channel_id")
+            if channel is None:
+                if not cur:
+                    return await send_simple(ctx, "Mod-log", "No mod-log channel set. Use `;modlog #channel`.", HELIX_WARN)
+                try:
+                    ch = ctx.guild.get_channel(int(cur)) or self.bot.get_channel(int(cur))
+                except Exception:
+                    ch = None
+                if ch:
+                    return await send_simple(ctx, "Mod-log", f"Current mod-log channel: {ch.mention}", HELIX_PRIMARY)
+                return await send_simple(ctx, "Mod-log", f"Mod-log set to ID `{cur}` but I can't access it.", HELIX_WARN)
+            mods = cfg.modules or {}
+            mods["modlog_channel_id"] = str(channel.id)
+            cfg.modules = mods
             flag_modified(cfg, "modules")
             session.add(cfg)
             await session.commit()
+        await send_simple(ctx, "Mod-log Saved", f"Mod-log channel set to {channel.mention}", HELIX_SUCCESS)
 
-        # ── 5) Summary back to the invoker
-        past_map = {"Warn": "warned", "Mute": "muted", "Timeout": "timed out", "Unmute": "unmuted", "Kick": "kicked", "Ban": "banned", "Unban": "unbanned"}
-        past = past_map.get(action, action.lower() + "ed")
-        note = "DM sent." if dm_ok else "DM failed."
-        summary = mkembed(
-            title=f"{getattr(target, 'name', str(target))} was {past}",
-            desc=(f"Reason: {reason}" + (f"\nDuration: {duration}" if duration else "")) + f"\n{note}",
-            color=action_color,
-        )
-        summary.set_footer(text=f"Case {case_no} • Moderator: {ctx.author}")
-        await ctx.send(embed=summary)
-
-        return case_no
-
-
-
-
-# =============================================
-#              CONFIGURE MOD-LOG
-# =============================================
-    @commands.command(name="modlog")
-    @commands.has_permissions(manage_guild=True)
-    @commands.bot_has_permissions(send_messages=True)
-    async def modlog(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
-        async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-
-            if channel is None:
-                cid = get_modlog_channel_id(cfg)
-                if not cid:
-                    return await send_info(ctx, "Mod-log", "Current mod-log channel: **not set**")
-                ch = ctx.guild.get_channel(cid) or self.bot.get_channel(cid)
-                if ch is None:
-                    try:
-                        ch = await ctx.guild.fetch_channel(cid)  # type: ignore
-                    except Exception:
-                        ch = None
-                return await send_info(
-                    ctx, "Mod-log",
-                    f"Current mod-log channel: {ch.mention if ch else f'`{cid}` (not accessible)'}"
-                )
-
-            set_modlog_channel_id(cfg, channel.id)
-            session.add(cfg)
-            await session.commit()
-
-        await send_ok(ctx, "Mod-log", f"Mod-log channel set to {channel.mention}")
-
-
-
-
-
-# =============================================
-#                    WARN
-# =============================================
+    # ---------- warn / warns / clearwarns ----------
     @commands.command(name="warn")
     @commands.has_permissions(manage_messages=True)
-    async def warn(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided."):
-        """Warn a user (DMs them the reason and logs the action)."""
-        if member == ctx.author:
-            return await ctx.reply(embed=mkembed("❌ You can’t warn yourself.", color=COLORS["ERROR"]))
+    async def warn(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
         if member.bot:
-            return await ctx.reply(embed=mkembed("❌ You can’t warn bots.", color=COLORS["ERROR"]))
-
-        # Build the DM embed
-        dm_embed = discord.Embed(
-            title=f"⚠️ You have been warned in {ctx.guild.name}!",
-            color=COLORS["WARN"],
-            timestamp=datetime.now(timezone.utc),
-        )
-        dm_embed.add_field(name="Reason", value=reason, inline=False)
-
-        # Send DM
+            return await send_simple(ctx, "Invalid Target", "You cannot warn bots.", HELIX_WARN)
         dm_ok = True
         try:
-            await member.send(embed=dm_embed)
-        except discord.Forbidden:
-            dm_ok = False
+            await member.send(f"You were warned in **{ctx.guild.name}**.\nReason: {reason}")
         except Exception:
             dm_ok = False
-
-        # Log case to modlog
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            mods = cfg.modules or {}
+            warns = mods.get("warns", {})
+            user_warns = warns.get(str(member.id), [])
+            user_warns.append({"reason": reason, "moderator": str(ctx.author.id), "timestamp": datetime.now(timezone.utc).isoformat()})
+            warns[str(member.id)] = user_warns
+            mods["warns"] = warns
+            cfg.modules = mods
+            flag_modified(cfg, "modules")
+            session.add(cfg)
+            await session.commit()
         await self._log_case(ctx, member, "Warn", reason, None, dm_ok)
 
-
-
-
-
-# =============================================
-#                    WARNS
-# =============================================
     @commands.command(name="warns", aliases=["warnings"])
-    async def warns(self, ctx, member: Optional[discord.Member] = None):
-        """Display a user's stored warnings."""
+    async def warns(self, ctx: commands.Context, member: Optional[discord.Member] = None):
         member = member or ctx.author
         async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            cfg.modules = cfg.modules or {}
-            warns = cfg.modules.get("warns", {})
-            user_warns = warns.get(str(member.id), [])
-
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            warns_map = (cfg.modules or {}).get("warns", {})
+            user_warns = warns_map.get(str(member.id), [])
         if not user_warns:
-            return await ctx.reply(f"{member.mention} has no warnings.")
-
-        embed = discord.Embed(
-            title=f"Warnings for {member}",
-            color=COLORS["WARNING"],
-            timestamp=datetime.now(timezone.utc),
-        )
-
+            return await send_simple(ctx, "Warnings", f"{member.mention} has no warnings.", HELIX_PRIMARY)
+        embed = mkembed(f"Warnings — {member}", color=HELIX_WARN)
         for i, w in enumerate(user_warns, 1):
             ts = datetime.fromisoformat(w["timestamp"]).strftime("%Y-%m-%d %H:%M")
-            embed.add_field(
-                name=f"{i}. {w['reason']}",
-                value=f"Moderator: <@{w['moderator']}> • {ts}",
-                inline=False,
-            )
+            embed.add_field(name=f"{i}. {w['reason']}", value=f"Moderator: <@{w['moderator']}> • {ts}", inline=False)
+        embed.set_footer(text=FOOTER_TEXT, icon_url=(self.bot.user.display_avatar.url if getattr(self.bot.user,"display_avatar",None) else None))
+        await ctx.send(embed=embed)
 
-        await ctx.reply(embed=embed)
-
-
-
-
-
-
-# =============================================
-#                 CLEARWARNS
-# =============================================
     @commands.command(name="clearwarns", aliases=["clearwarnings"])
     @commands.has_permissions(manage_messages=True)
     async def clearwarns(self, ctx: commands.Context, member: discord.Member):
         async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
+            cfg = await get_guild_cfg(session, ctx.guild.id)
             mods = cfg.modules or {}
             warns_map = mods.get("warns", {})
             if str(member.id) in warns_map:
@@ -472,727 +264,400 @@ class Moderation(commands.Cog):
                 flag_modified(cfg, "modules")
                 session.add(cfg)
                 await session.commit()
-                return await send_ok(ctx, "Clear Warnings", f"Cleared all warnings for {member.mention}.")
-        await send_info(ctx, "Clear Warnings", f"{member.mention} has no warnings.")
+                return await send_simple(ctx, "Clear Warnings", f"Cleared all warnings for {member.mention}.", HELIX_SUCCESS)
+        await send_simple(ctx, "Clear Warnings", f"{member.mention} has no warnings.", HELIX_WARN)
 
+    # ---------- muterole config ----------
+    @commands.command(name="muterole")
+    @commands.has_permissions(manage_roles=True)
+    async def muterole(self, ctx: commands.Context, role: Optional[discord.Role] = None):
+        """
+        ;muterole @Muted  → set muted role
+        ;muterole         → show current
+        ;muterole none    → clear
+        """
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            mods = cfg.modules or {}
+            cur = mods.get("muted_role_id")
+            if role is None:
+                if ctx.message.content.strip().lower().endswith("none"):
+                    mods.pop("muted_role_id", None)
+                    cfg.modules = mods
+                    flag_modified(cfg, "modules")
+                    session.add(cfg)
+                    await session.commit()
+                    emb = mkembed("🔇 Muted Role Cleared", "Muted role removed.", HELIX_WARN)
+                    emb.set_footer(text=FOOTER_TEXT, icon_url=(self.bot.user.display_avatar.url if getattr(self.bot.user,"display_avatar",None) else None))
+                    return await ctx.send(embed=emb)
+                if cur:
+                    try:
+                        r = ctx.guild.get_role(int(cur))
+                    except Exception:
+                        r = None
+                    if r:
+                        return await ctx.send(embed=mkembed("🔇 Muted Role", f"Currently: {r.mention}", HELIX_PRIMARY))
+                    return await ctx.send(embed=mkembed("🔇 Muted Role", f"Currently set to ID `{cur}` but role not found.", HELIX_WARN))
+                return await ctx.send(embed=mkembed("🔇 Muted Role", "No muted role set. Use `;muterole @Muted`.", HELIX_WARN))
+            mods["muted_role_id"] = str(role.id)
+            cfg.modules = mods
+            flag_modified(cfg, "modules")
+            session.add(cfg)
+            await session.commit()
+        emb = mkembed("🔇 Muted Role Saved", f"Muted role set to {role.mention}.", HELIX_SUCCESS)
+        emb.set_footer(text=FOOTER_TEXT, icon_url=(self.bot.user.display_avatar.url if getattr(self.bot.user,"display_avatar",None) else None))
+        await ctx.send(embed=emb)
 
-
-
-
-# =============================================
-#                    MUTE
-# =============================================
-    @commands.command()
-    @commands.has_permissions(moderate_members=True)
-    @commands.bot_has_permissions(moderate_members=True, send_messages=True, embed_links=True)
-    async def mute(self, ctx: commands.Context, member: discord.Member, duration: str = "10m", *, reason: str = "No reason provided"):
-        """Timeout (mute) a member for a given duration (e.g., 30m, 2h, 1d)."""
-        if member.bot:
-            return await ctx.reply("You can’t mute bots.")
-        if member == ctx.author:
-            return await ctx.reply("You can’t mute yourself.")
-
-        ms = parse_duration_ms(duration)
-        if ms is None or ms <= 0:
-            return await ctx.reply("Invalid duration. Try `10m`, `2h`, `1d`, `1h30m`.")
-
-        # Discord timeout max ~28 days
-        max_ms = 28 * 24 * 60 * 60 * 1000
-        if ms > max_ms:
-            return await ctx.reply("Duration too long. Max is **28d**.")
-
-        # DM first
+    # ---------- mute / unmute ----------
+    @commands.command(name="mute")
+    @commands.has_permissions(manage_roles=True)
+    @commands.bot_has_permissions(manage_roles=True)
+    async def mute(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            role_id = (cfg.modules or {}).get("muted_role_id")
+        if not role_id:
+            return await send_simple(ctx, "No Muted Role", "No muted role set. Use `;muterole @Muted`.", HELIX_WARN)
+        role = ctx.guild.get_role(int(role_id))
+        if not role:
+            return await send_simple(ctx, "Muted Role Missing", "Configured muted role doesn't exist. Re-set with `;muterole @Muted`.", HELIX_WARN)
+        if role in member.roles:
+            return await send_simple(ctx, "Already Muted", f"{member.mention} already has {role.mention}.", HELIX_WARN)
+        me = ctx.guild.me or ctx.guild.get_member(self.bot.user.id)
+        if me and role >= me.top_role:
+            return await send_simple(ctx, "Permission Error", "I cannot manage that role because it is equal or higher than my top role.", HELIX_ERROR)
+        try:
+            await member.add_roles(role, reason=f"Muted by {ctx.author}: {reason}")
+        except discord.Forbidden:
+            return await send_simple(ctx, "Forbidden", "I don't have permission to add that role.", HELIX_ERROR)
+        except Exception as e:
+            return await send_simple(ctx, "Mute Failed", f"Failed to mute: `{e}`", HELIX_ERROR)
         dm_ok = True
         try:
-            await member.send(
-                f"You have been **muted** in **{ctx.guild.name}** for **{duration}**.\n"
-                f"**Reason:** {reason}"
-            )
+            await member.send(f"You have been muted in **{ctx.guild.name}**.\nReason: {reason}")
         except Exception:
             dm_ok = False
+        await self._log_case(ctx, member, "Mute", reason, None, dm_ok)
 
+    @commands.command(name="unmute")
+    @commands.has_permissions(manage_roles=True)
+    @commands.bot_has_permissions(manage_roles=True)
+    async def unmute(self, ctx: commands.Context, member: discord.Member):
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            role_id = (cfg.modules or {}).get("muted_role_id")
+        if not role_id:
+            return await send_simple(ctx, "No Muted Role", "No muted role configured. Use `;muterole @Muted`.", HELIX_WARN)
+        role = ctx.guild.get_role(int(role_id))
+        if not role:
+            return await send_simple(ctx, "Muted Role Missing", "Configured muted role doesn't exist. Re-set it with `;muterole @Muted`.", HELIX_WARN)
+        if role not in member.roles:
+            return await send_simple(ctx, "Not Muted", f"{member.mention} does not have {role.mention}.", HELIX_WARN)
         try:
-            until = datetime.now(timezone.utc) + timedelta(milliseconds=ms)
-            await member.timeout(until, reason=reason)
+            await member.remove_roles(role, reason=f"Unmuted by {ctx.author}")
         except discord.Forbidden:
-            return await ctx.reply("I don’t have permission to mute that member.")
+            return await send_simple(ctx, "Forbidden", "I don't have permission to remove that role.", HELIX_ERROR)
         except Exception as e:
-            return await ctx.reply(f"Error muting member: {e}")
-
-        await self._log_case(ctx, member, "Mute", reason, duration, dm_ok)
-
-
-
-
-
-# =============================================
-#                     UNMUTE
-# =============================================
-    @commands.command()
-    @commands.has_permissions(moderate_members=True)
-    @commands.bot_has_permissions(moderate_members=True, send_messages=True, embed_links=True)
-    async def unmute(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
-        """Remove timeout (mute) from a member."""
+            return await send_simple(ctx, "Unmute Failed", f"Failed to unmute: `{e}`", HELIX_ERROR)
         dm_ok = True
         try:
-            await member.send(
-                f"You have been **unmuted** in **{ctx.guild.name}**.\n"
-                f"**Reason:** {reason}"
-            )
+            await member.send(f"You have been unmuted in **{ctx.guild.name}**.")
         except Exception:
             dm_ok = False
+        await self._log_case(ctx, member, "Unmute", "Unmuted", None, dm_ok)
 
-        try:
-            await member.timeout(None, reason=reason)  # clears timeout
-        except discord.Forbidden:
-            return await ctx.reply("I don’t have permission to unmute that member.")
-        except Exception as e:
-            return await ctx.reply(f"Error unmuting member: {e}")
-
-        await self._log_case(ctx, member, "Unmute", reason, None, dm_ok)
-
-
-
-
-
-# =============================================
-#                    KICK
-# =============================================
-    @commands.command()
+    # ---------- kick / ban / unban ----------
+    @commands.command(name="kick")
     @commands.has_permissions(kick_members=True)
-    @commands.bot_has_permissions(kick_members=True, send_messages=True, embed_links=True)
+    @commands.bot_has_permissions(kick_members=True)
     async def kick(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
-        """Kick a member (DMs them before kicking)."""
         if member == ctx.author:
-            return await ctx.reply("You can’t kick yourself.")
+            return await send_simple(ctx, "Invalid Target", "You cannot kick yourself.", HELIX_WARN)
         if member.bot:
-            return await ctx.reply("You can’t kick bots.")
-
-        # Try DM first
+            return await send_simple(ctx, "Invalid Target", "You cannot kick bots.", HELIX_WARN)
         dm_ok = True
         try:
-            await member.send(
-                f"You have been **kicked** from **{ctx.guild.name}**.\n"
-                f"**Reason:** {reason}"
-            )
+            await member.send(f"You have been kicked from **{ctx.guild.name}**.\nReason: {reason}")
         except Exception:
             dm_ok = False
-
-        # Now perform the kick
         try:
             await member.kick(reason=reason)
         except discord.Forbidden:
-            return await ctx.reply("I don’t have permission to kick that member.")
+            return await send_simple(ctx, "Forbidden", "I don't have permission to kick that member.", HELIX_ERROR)
         except Exception as e:
-            return await ctx.reply(f"Error kicking member: {e}")
-
-        # Log the action
+            return await send_simple(ctx, "Kick Failed", f"Failed to kick: `{e}`", HELIX_ERROR)
         await self._log_case(ctx, member, "Kick", reason, None, dm_ok)
 
-
-
-
-
-# =============================================
-#                   BAN
-# =============================================
-    @commands.command()
+    @commands.command(name="ban")
     @commands.has_permissions(ban_members=True)
-    @commands.bot_has_permissions(ban_members=True, send_messages=True, embed_links=True)
+    @commands.bot_has_permissions(ban_members=True)
     async def ban(self, ctx: commands.Context, target: discord.User, *, reason: str = "No reason provided"):
-        """Ban a user (DM first, then ban). Accepts mention or user ID."""
-        # prevent self-ban or bot-ban edge cases
         if isinstance(target, discord.Member) and target == ctx.author:
-            return await ctx.reply("You can’t ban yourself.")
+            return await send_simple(ctx, "Invalid Target", "You cannot ban yourself.", HELIX_WARN)
         if target.bot:
-            return await ctx.reply("You can’t ban bots.")
-
-        # Try DM before the ban (most reliable while you still share a server)
+            return await send_simple(ctx, "Invalid Target", "You cannot ban bots.", HELIX_WARN)
         dm_ok = True
         try:
-            await target.send(
-                f"You have been **banned** from **{ctx.guild.name}**.\n"
-                f"**Reason:** {reason}"
-            )
+            await target.send(f"You have been banned from **{ctx.guild.name}**.\nReason: {reason}")
         except Exception:
             dm_ok = False
-
-        # Perform the ban
         try:
-            # Works for both Members and Users (if already left the guild)
             await ctx.guild.ban(target, reason=reason)
-            # If you want to prune recent messages (API supports seconds):
-            # await ctx.guild.ban(target, reason=reason, delete_message_seconds=0)
         except discord.Forbidden:
-            return await ctx.reply("I don’t have permission to ban that user.")
+            return await send_simple(ctx, "Forbidden", "I don't have permission to ban that user.", HELIX_ERROR)
         except Exception as e:
-            return await ctx.reply(f"Error banning user: {e}")
-
-        # Log the action (will increment case counter and store message ref)
+            return await send_simple(ctx, "Ban Failed", f"Failed to ban: `{e}`", HELIX_ERROR)
         await self._log_case(ctx, target, "Ban", reason, None, dm_ok)
 
-
-
-
-
-# =============================================
-#                     UNBAN
-# =============================================
-    @commands.command()
+    @commands.command(name="unban")
     @commands.has_permissions(ban_members=True)
-    @commands.bot_has_permissions(ban_members=True, send_messages=True, embed_links=True)
+    @commands.bot_has_permissions(ban_members=True)
     async def unban(self, ctx: commands.Context, user_id: int, *, reason: str = "No reason provided"):
-        """Unban a member."""
         try:
             user = await self.bot.fetch_user(user_id)
             await ctx.guild.unban(user, reason=reason)
         except Exception as e:
-            return await ctx.reply(f"Error unbanning member: {e}")
-
+            return await send_simple(ctx, "Unban Failed", f"Failed to unban: `{e}`", HELIX_ERROR)
         dm_ok = True
         try:
-            await user.send(f"You have been **unbanned** from **{ctx.guild.name}**.\nReason: {reason}")
+            await user.send(f"You have been unbanned from **{ctx.guild.name}**.\nReason: {reason}")
         except Exception:
             dm_ok = False
-
         await self._log_case(ctx, user, "Unban", reason, None, dm_ok)
 
+    # ---------- reason / duration editing ----------
+    async def _find_case_message(self, ctx: commands.Context, case_no: int) -> Optional[discord.Message]:
+        async with AsyncSessionLocal() as session:
+            cfg = await get_guild_cfg(session, ctx.guild.id)
+            idx = (cfg.modules or {}).get("case_index", {})
+            entry = idx.get(str(case_no)) if isinstance(idx, dict) else None
+        if not entry:
+            return None
+        try:
+            ch_id = int(entry["c"])
+            msg_id = int(entry["m"])
+            ch = ctx.guild.get_channel(ch_id) or self.bot.get_channel(ch_id)
+            if not ch:
+                ch = await ctx.guild.fetch_channel(ch_id)
+            msg = await ch.fetch_message(msg_id)
+            return msg
+        except Exception:
+            return None
 
-
-
-
-# =============================================
-#                   REASON
-# =============================================
     @commands.command(name="reason")
     @commands.has_permissions(manage_messages=True)
-    @commands.bot_has_permissions(send_messages=True, embed_links=True)
     async def reason_cmd(self, ctx: commands.Context, case_no: int, *, new_reason: str):
-        """Update the reason in both the embed and stored warning record (if applicable)."""
-        # 1️⃣ Locate the message
-        async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            idx = (cfg.modules or {}).get("case_index", {})
-            entry = idx.get(str(case_no))
-            if not entry:
-                return await send_err(ctx, "Reason Update", f"Case `{case_no}` not found in index.")
-            ch_id, msg_id = int(entry["c"]), int(entry["m"])
-            stored_uid = int(entry["u"]) if "u" in entry else None
-
-        # 2️⃣ Fetch the log message
-        channel = ctx.guild.get_channel(ch_id) or self.bot.get_channel(ch_id)
-        if channel is None:
-            try:
-                channel = await ctx.guild.fetch_channel(ch_id)
-            except Exception:
-                return await send_err(ctx, "Reason Update", "I can’t access the log channel.")
-
+        msg = await self._find_case_message(ctx, case_no)
+        if not msg:
+            return await send_simple(ctx, "Case Not Found", f"Could not find case #{case_no}.", HELIX_WARN)
         try:
-            message = await channel.fetch_message(msg_id)
-        except Exception:
-            return await send_err(ctx, "Reason Update", "Couldn’t fetch the case message.")
-
-        if not message.embeds:
-            return await send_err(ctx, "Reason Update", "No embed found in that case message.")
-
-        # 3️⃣ Edit the embed
-        emb = message.embeds[0]
-        edited = discord.Embed.from_dict(emb.to_dict())
-        edited.timestamp = datetime.now(timezone.utc)
-
-        field_index = None
-        for i, f in enumerate(edited.fields):
-            if f.name.lower().strip() == "reason":
-                field_index = i
-                break
-
-        if field_index is not None:
-            edited.set_field_at(field_index, name="Reason", value=new_reason, inline=False)
-        else:
-            edited.add_field(name="Reason", value=new_reason, inline=False)
-
-        try:
-            await message.edit(embed=edited)
-        except Exception as e:
-            return await send_err(ctx, "Reason Update", f"Failed to edit embed: `{e}`")
-
-        # 4️⃣ Update stored reason in warning data (if this case belongs to a warn)
-        # We'll check if this user has warnings and patch the latest one.
-        async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            warns = (cfg.modules or {}).get("warns", {})
-
-            if stored_uid and str(stored_uid) in warns:
-                # Find matching warn case if possible (latest case for same user)
-                user_warns = warns[str(stored_uid)]
-                if user_warns:
-                    user_warns[-1]["reason"] = new_reason  # update last warning
-                    cfg.modules["warns"][str(stored_uid)] = user_warns
-                    flag_modified(cfg, "modules")
-                    session.add(cfg)
-                    await session.commit()
-
-        await send_ok(ctx, "Reason Updated", f"Case `{case_no}` reason updated to:\n> {new_reason}")
-
-
-
-
-
-# =============================================
-#              DURATION 
-# =============================================
-    @commands.command(name="duration")
-    @commands.has_permissions(moderate_members=True)
-    @commands.bot_has_permissions(moderate_members=True, send_messages=True, embed_links=True)
-    async def duration_cmd(self, ctx: commands.Context, case_no: int, duration: str):
-        """
-        Update the embed's Duration field AND the member's actual timeout
-        for Mute/Timeout cases.
-        """
-        ms = parse_duration_ms(duration)
-        if ms is None or ms <= 0:
-            return await send_err(ctx, "Duration", "Invalid time. Try `30m`, `2h`, `1d`, `1h30m`.")
-
-        # Discord timeout hard limit ~28 days
-        max_ms = 28 * 24 * 60 * 60 * 1000
-        if ms > max_ms:
-            return await send_err(ctx, "Duration", "Duration too long. Max is **28d**.")
-
-        # 1) Find the logged message (and user id, if stored)
-        async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
-            idx = (cfg.modules or {}).get("case_index", {})
-            entry = idx.get(str(case_no))
-            if not entry:
-                return await send_err(ctx, "Duration", "I can't find that case in my index.")
-            ch_id, msg_id = int(entry["c"]), int(entry["m"])
-            stored_uid = int(entry["u"]) if "u" in entry else None
-
-        # 2) Fetch the message + embed
-        channel = ctx.guild.get_channel(ch_id) or self.bot.get_channel(ch_id)
-        if channel is None:
-            try:
-                channel = await ctx.guild.fetch_channel(ch_id)  # type: ignore
-            except Exception:
-                return await send_err(ctx, "Duration", "I can't access the log channel for that case.")
-
-        try:
-            message: discord.Message = await channel.fetch_message(msg_id)  # type: ignore
-        except Exception:
-            return await send_err(ctx, "Duration", "I couldn't fetch the original case message.")
-
-        if not message.embeds:
-            return await send_err(ctx, "Duration", "That case message has no embed to edit.")
-        emb = message.embeds[0]
-
-        # 3) Determine if this is a Mute/Timeout case from the author line
-        # Expected: "Case N | <Action> | <username>"
-        action_name = ""
-        try:
-            author_title = emb.author.name or ""
-            parts = [p.strip().lower() for p in author_title.split("|")]
-            if len(parts) >= 2:
-                action_name = parts[1]  # e.g., 'mute' or 'timeout'
-        except Exception:
-            pass
-
-        is_timeout_case = action_name in {"mute", "timeout"}
-
-        # 4) Resolve user id to apply timeout (from index or fallback parse from "User" field)
-        uid = stored_uid
-        if uid is None:
+            if not msg.embeds:
+                return await send_simple(ctx, "Not Editable", "Case message does not contain an embed I can edit.", HELIX_WARN)
+            emb = discord.Embed.from_dict(msg.embeds[0].to_dict())
             for f in emb.fields:
-                if f.name.strip().lower() == "user":
-                    # Value is like: "<@1234> (`1234`)" or "<@1234>"
-                    m = re.search(r"\(`(\d+)`\)", f.value)
-                    if not m:
-                        m = re.search(r"<@!?(?P<id>\d+)>", f.value)
-                    if m:
-                        uid = int(m.group(1) if "id" not in m.groupdict() else m.group("id"))
+                if f.name.lower() == "reason":
+                    f.value = new_reason[:1024]
                     break
-
-        member_for_timeout: discord.Member | None = None
-        if is_timeout_case and uid:
-            member_for_timeout = ctx.guild.get_member(uid)
-            if member_for_timeout is None:
-                try:
-                    member_for_timeout = await ctx.guild.fetch_member(uid)
-                except Exception:
-                    member_for_timeout = None
-
-        # 5) Update the embed Duration field
-        edited = discord.Embed.from_dict(emb.to_dict())
-        edited.timestamp = datetime.now(timezone.utc)
-
-        idx_field = None
-        for i, f in enumerate(edited.fields):
-            if f.name.strip().lower() == "duration":
-                idx_field = i
-                break
-
-        human = humanize_ms(ms)
-        if idx_field is not None:
-            edited.set_field_at(idx_field, name="Duration", value=human, inline=True)
-        else:
-            edited.add_field(name="Duration", value=human, inline=True)
-
-        # 6) If this was a Mute/Timeout case and we have the member, apply the new timeout
-        # (This overwrites any existing timeout with "now + new_duration")
-        if is_timeout_case and member_for_timeout:
-            try:
-                until = datetime.now(timezone.utc) + timedelta(milliseconds=ms)
-                await member_for_timeout.timeout(until, reason=f"Duration updated by {ctx.author} to {duration}")
-            except discord.Forbidden:
-                return await send_err(ctx, "Duration", "I don’t have permission to change that member’s timeout.")
-            except Exception as e:
-                return await send_err(ctx, "Duration", f"Failed to update the actual timeout: `{e}`")
-
-        # 7) Save the embed update
-        try:
-            await message.edit(embed=edited)
+            else:
+                emb.add_field(name="Reason", value=new_reason[:1024], inline=False)
+            await msg.edit(embed=emb)
+            await send_simple(ctx, "Reason Updated", f"Updated reason for case #{case_no}.", HELIX_SUCCESS)
         except Exception as e:
-            return await send_err(ctx, "Duration", f"Failed to edit the log message: `{e}`")
+            return await send_simple(ctx, "Edit Failed", f"Failed to edit case message: `{e}`", HELIX_ERROR)
 
-        if is_timeout_case and member_for_timeout:
-            await send_ok(ctx, "Duration Updated", f"Case `{case_no}` set to **{duration}** and timeout changed.")
-        elif is_timeout_case and not member_for_timeout:
-            await send_warn(ctx, "Duration Updated", f"Embed updated for case `{case_no}`, but I couldn't find the member to update their timeout.")
-        else:
-            await send_info(ctx, "Duration Updated", f"Embed updated for case `{case_no}` (not a mute/timeout case).")
+    @commands.command(name="duration")
+    @commands.has_permissions(manage_messages=True)
+    async def duration_cmd(self, ctx: commands.Context, case_no: int, duration: str):
+        ms = parse_duration_ms(duration)
+        if ms is None:
+            return await send_simple(ctx, "Invalid Duration", "Please use numbers + units like `10m`, `2h`, `1d`.", HELIX_WARN)
+        human = humanize_ms(ms)
+        msg = await self._find_case_message(ctx, case_no)
+        if not msg:
+            return await send_simple(ctx, "Case Not Found", f"Could not find case #{case_no}.", HELIX_WARN)
+        try:
+            if not msg.embeds:
+                return await send_simple(ctx, "Not Editable", "Case message does not contain an embed I can edit.", HELIX_WARN)
+            emb = discord.Embed.from_dict(msg.embeds[0].to_dict())
+            for f in emb.fields:
+                if f.name.lower() == "duration":
+                    f.value = human
+                    break
+            else:
+                emb.add_field(name="Duration", value=human, inline=True)
+            await msg.edit(embed=emb)
+            await send_simple(ctx, "Duration Updated", f"Set duration for case #{case_no} to {human}.", HELIX_SUCCESS)
+        except Exception as e:
+            return await send_simple(ctx, "Edit Failed", f"Failed to edit case message: `{e}`", HELIX_ERROR)
 
-
-
-
-
-
-# =============================================
-#                    CLEAN
-# =============================================
+    # ---------- clean / purge ----------
     @commands.command(name="clean")
     @commands.has_permissions(manage_messages=True)
     @commands.bot_has_permissions(manage_messages=True)
     async def clean(self, ctx: commands.Context, limit: int = 50):
-
-        def check(msg: discord.Message):
-            content = (msg.content or "").strip()
-            return (msg.author.id == ctx.bot.user.id) 
-
+        def check(m: discord.Message):
+            return m.author.id == ctx.bot.user.id
         try:
             deleted = await ctx.channel.purge(limit=limit, check=check, bulk=True)
+            await send_simple(ctx, "Cleaned", f"Deleted {len(deleted)} bot messages.", HELIX_SUCCESS)
         except discord.Forbidden:
-            return await send_err(ctx, "Clean Failed", "I don’t have permission to delete messages here.")
+            return await send_simple(ctx, "Permission Error", "I don't have permission to delete messages here.", HELIX_ERROR)
         except Exception as e:
-            return await send_err(ctx, "Clean Failed", f"`{e}`")
+            return await send_simple(ctx, "Clean Failed", f"Error: `{e}`", HELIX_ERROR)
 
-        '''note = await send_ok(ctx, "Clean", f"Deleted **{len(deleted)}** bot/command messages.")
-        await asyncio.sleep(4)
-        with contextlib.suppress(Exception):
-            await note.delete()'''
-
-
-
-
-
-# =============================================
-#                    PURGE
-# =================================
     @commands.command(name="purge")
     @commands.has_permissions(manage_messages=True)
     @commands.bot_has_permissions(manage_messages=True, read_message_history=True)
-    async def purge(
-        self,
-        ctx: commands.Context,
-        limit: int,
-        mode: str = "any",
-        *,
-        value: str | None = None,
-    ):
-        """
-        Delete messages with rich filters.
-
-        Usage:
-        ;purge 100 any
-        ;purge 50 user @User
-        ;purge 50 match spam
-        ;purge 50 startswith !
-        ;purge 50 endswith ?
-        ;purge 50 not spoilers
-        ;purge 100 after 123456789012345678
-        ;purge 100 links
-        ;purge 100 invites
-        ;purge 50 images
-        ;purge 100 mentions
-        ;purge 100 embeds
-        ;purge 100 bots
-        ;purge 100 humans
-        ;purge 100 text
-        """
-
-        # normalize + guard
-        if limit < 1:
-            return await ctx.send(embed=mkembed("❌ Purge", "Limit must be at least 1.", COLORS["ERROR"]))
-        if limit > 1000:
-            return await ctx.send(embed=mkembed("⚠️ Purge", "Limit too large. Max **1000** to stay safe.", COLORS["WARNING"]))
-
-        # Resolve `user` mode target and `after` pivot
-        after_message = None
-        resolved_user_id: int | None = None
-        mode_lc = mode.lower()
-
-        # parse "after" (message ID or link)
-        if mode_lc == "after":
+    async def purge(self, ctx: commands.Context, limit: int, mode: str = "any", *, value: Optional[str] = None):
+        await ctx.trigger_typing()
+        mode = (mode or "any").lower()
+        if limit <= 0:
+            return await send_simple(ctx, "Invalid limit", "Provide a positive number of messages to purge.", HELIX_WARN)
+        check = None
+        if mode == "any":
+            check = None
+        elif mode == "user":
             if not value:
-                return await ctx.send(embed=mkembed("❌ Purge", "Provide a message **ID** or **link** after which to delete.", COLORS["ERROR"]))
-            # Accept raw ID or full jump link
-            msg_id_match = re.search(r"(\d{15,25})$", value.strip())
-            if not msg_id_match:
-                return await ctx.send(embed=mkembed("❌ Purge", "I couldn't parse that message ID/link.", COLORS["ERROR"]))
-            msg_id = int(msg_id_match.group(1))
-            try:
-                after_message = await ctx.channel.fetch_message(msg_id)  # type: ignore
-            except Exception:
-                return await ctx.send(embed=mkembed("❌ Purge", "I couldn't fetch that message in this channel.", COLORS["ERROR"]))
-
-        # parse "user" (mention or id)
-        if mode_lc == "user":
+                return await send_simple(ctx, "Missing argument", "When using `user` mode, give a user mention/ID/name.", HELIX_WARN)
+            target = _resolve_member_by_query(ctx.guild, value)
+            if not target:
+                return await send_simple(ctx, "User not found", "Couldn't find that user.", HELIX_WARN)
+            def check(m): return m.author.id == target.id
+        elif mode == "contains":
             if not value:
-                return await ctx.send(embed=mkembed("❌ Purge", "Provide a **user mention** or **user ID**.", COLORS["ERROR"]))
-            target = None
-            # Mention?
-            id_match = re.search(r"(\d{15,25})", value)
-            if id_match:
-                uid = int(id_match.group(1))
-                target = ctx.guild.get_member(uid) if ctx.guild else None
-                resolved_user_id = uid
-            if target is None and ctx.guild:
-                # Try by name#discrim or name (best effort)
-                target = discord.utils.get(ctx.guild.members, name=value)  # type: ignore
-                if target:
-                    resolved_user_id = target.id
-            if resolved_user_id is None:
-                return await ctx.send(embed=mkembed("❌ Purge", "I couldn't resolve that user.", COLORS["ERROR"]))
-
-        # Build check function
-        check = _mk_filter(mode_lc, str(resolved_user_id) if mode_lc == "user" else value)
-
-        # We don't want to delete pinned messages; also skip our own invocation.
-        invocation_id = ctx.message.id
-
-        def final_check(m: discord.Message) -> bool:
-            if m.id == invocation_id:
-                return False
-            if m.pinned:
-                return False
-            try:
-                return check(m)
-            except Exception:
-                return False
-
-        # Do the purge. Note: TextChannel.purge ignores >14d messages in bulk mode automatically.
-        # Increase limit by 1 so the *count of non-invocation* deletions meets the user's request.
-        to_fetch = min(limit + 1, 10000)
-
+                return await send_simple(ctx, "Missing argument", "When using `contains` mode, provide the text to match.", HELIX_WARN)
+            def check(m): return value.lower() in (m.content or "").lower()
+        else:
+            return await send_simple(ctx, "Unknown mode", "Valid modes: any, user, contains", HELIX_WARN)
         try:
-            deleted = await ctx.channel.purge(  # type: ignore
-                limit=to_fetch,
-                check=final_check,
-                after=after_message,
-                bulk=True,
-                oldest_first=False,
-            )
+            deleted = await ctx.channel.purge(limit=limit, check=check, bulk=True)
+            await send_simple(ctx, "Purged", f"Deleted {len(deleted)} messages.", HELIX_SUCCESS)
         except discord.Forbidden:
-            return await ctx.send(embed=mkembed("❌ Purge", "I don't have permission to delete messages here.", COLORS["ERROR"]))
-        except discord.HTTPException as e:
-            return await ctx.send(embed=mkembed("❌ Purge", f"Failed to purge: `{e}`", COLORS["ERROR"]))
+            return await send_simple(ctx, "Permission Error", "I don't have permission to delete messages here.", HELIX_ERROR)
+        except Exception as e:
+            return await send_simple(ctx, "Purge Failed", f"Error: `{e}`", HELIX_ERROR)
 
-        # Ensure the command message is gone (if purge didn't catch it)
-        with contextlib.suppress(Exception):
-            await ctx.message.delete()
-
-        # Summarize
-        # Remove 1 from shown count if the invocation was caught (it shouldn't due to final_check)
-        count = len([m for m in deleted if m.id != invocation_id])
-
-        em = mkembed(
-            "🧹 Purge Complete",
-            desc=f"Deleted **{count}** message(s).",
-            color=COLORS["SUCCESS"],
-        )
-        em.add_field(name="Mode", value=_format_mode(mode_lc, value), inline=True)
-        if after_message:
-            em.add_field(name="After", value=f"[jump]({after_message.jump_url})", inline=True)
-        em.set_footer(text=f"Requested by {ctx.author}", icon_url=getattr(ctx.author.display_avatar, "url", None))
-        # Send a temp confirmation that auto-deletes
-        confirmation = await ctx.send(embed=em)
-        with contextlib.suppress(Exception):
-            await confirmation.delete(delay=5)
-
-
-
-
-
-
-# =============================================                 
-#                   SLOWMODE
-# =============================================
+    # ---------- slowmode / lock / unlock ----------
     @commands.command(name="slowmode")
     @commands.has_permissions(manage_channels=True)
     @commands.bot_has_permissions(manage_channels=True)
-    async def slowmode(self, ctx: commands.Context, delay: str = None):
+    async def slowmode(self, ctx: commands.Context, delay: Optional[str] = None):
         if delay is None:
             current = ctx.channel.slowmode_delay
-            return await send_info(ctx, "Slowmode", f"Current slowmode: **{current}s**")
-
+            return await send_simple(ctx, "Slowmode", f"Current slowmode: **{current}s**", HELIX_PRIMARY)
         if delay.lower() == "off":
             seconds = 0
         else:
             try:
                 seconds = int(delay)
             except ValueError:
-                return await send_err(ctx, "Slowmode", "Please enter a number (seconds) or `off`.")
-
+                return await send_simple(ctx, "Invalid", "Enter a number of seconds or `off`.", HELIX_WARN)
         try:
             await ctx.channel.edit(slowmode_delay=seconds, reason=f"Set by {ctx.author}")
+            if seconds == 0:
+                await send_simple(ctx, "Slowmode Disabled", f"Disabled in {ctx.channel.mention}.", HELIX_SUCCESS)
+            else:
+                await send_simple(ctx, "Slowmode Set", f"Set to **{seconds}s** in {ctx.channel.mention}.", HELIX_SUCCESS)
         except discord.Forbidden:
-            return await send_err(ctx, "Slowmode", "I don't have permission to manage this channel.")
-        except Exception as e:
-            return await send_err(ctx, "Slowmode", f"`{e}`")
+            return await send_simple(ctx, "Permission Error", "I can't manage this channel.", HELIX_ERROR)
 
-        if seconds == 0:
-            await send_ok(ctx, "Slowmode", f"Disabled in {ctx.channel.mention}.")
-        else:
-            await send_ok(ctx, "Slowmode", f"Set to **{seconds} seconds** in {ctx.channel.mention}.")
-
-
-
-
-# =============================================                 
-#                   LOCK
-# =============================================
     @commands.command(name="lock")
     @commands.has_permissions(manage_channels=True)
     @commands.bot_has_permissions(manage_channels=True)
     async def lock(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None, *, reason: str = "No reason provided"):
-        channel = channel or ctx.channel #type: ignore
+        channel = channel or ctx.channel
         if not isinstance(channel, discord.TextChannel):
-            return await send_err(ctx, "Lock", "Please target a text channel.")
-        overwrites = channel.overwrites_for(ctx.guild.default_role) #type: ignore
+            return await send_simple(ctx, "Invalid Target", "Provide a text channel.", HELIX_WARN)
+        overwrites = channel.overwrites_for(ctx.guild.default_role)
         if overwrites.send_messages is False:
-            return await send_info(ctx, "Lock", f"{channel.mention} is already locked.")
+            return await send_simple(ctx, "Already Locked", f"{channel.mention} is already locked.", HELIX_WARN)
         overwrites.send_messages = False
         try:
-            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrites, reason=reason) #type: ignore
+            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrites, reason=reason)
+            await send_simple(ctx, "Locked", f"🔒 Locked {channel.mention}", HELIX_SUCCESS)
         except discord.Forbidden:
-            return await send_err(ctx, "Lock", "I don’t have permission to edit channel permissions here.")
-        await send_ok(ctx, "Lock", f"🔒 Locked {channel.mention}\nReason: {reason}")
+            return await send_simple(ctx, "Permission Error", "I cannot change channel permissions.", HELIX_ERROR)
 
-
-
-
-
-# =============================================                 
-#                   UNLOCK
-# =============================================
     @commands.command(name="unlock")
     @commands.has_permissions(manage_channels=True)
     @commands.bot_has_permissions(manage_channels=True)
     async def unlock(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        channel = channel or ctx.channel #type: ignore
+        channel = channel or ctx.channel
         if not isinstance(channel, discord.TextChannel):
-            return await send_err(ctx, "Unlock", "Please target a text channel.")
-        overwrites = channel.overwrites_for(ctx.guild.default_role) #type: ignore
+            return await send_simple(ctx, "Invalid Target", "Provide a text channel.", HELIX_WARN)
+        overwrites = channel.overwrites_for(ctx.guild.default_role)
         if overwrites.send_messages is True:
-            return await send_info(ctx, "Unlock", f"{channel.mention} is already unlocked.")
+            return await send_simple(ctx, "Already Unlocked", f"{channel.mention} is already unlocked.", HELIX_WARN)
         overwrites.send_messages = True
         try:
-            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrites, reason=f"Unlock by {ctx.author}") #type: ignore
+            await channel.set_permissions(ctx.guild.default_role, overwrite=overwrites, reason=f"Unlock by {ctx.author}")
+            await send_simple(ctx, "Unlocked", f"🔓 Unlocked {channel.mention}", HELIX_SUCCESS)
         except discord.Forbidden:
-            return await send_err(ctx, "Unlock", "I don’t have permission to edit channel permissions here.")
-        await send_ok(ctx, "Unlock", f"🔓 Unlocked {channel.mention}.")
+            return await send_simple(ctx, "Permission Error", "I cannot change channel permissions.", HELIX_ERROR)
 
-
-
-
-# ==========================================
-#                MODSTATS
-# ==========================================
+    # ---------- modstats (simple placeholder using modules['modstats']) ----------
     @commands.command(name="modstats", aliases=["ms"])
     @commands.has_permissions(manage_messages=True)
     async def modstats(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        """Show moderation statistics for yourself or another moderator."""
         member = member or ctx.author
-        now = datetime.now(timezone.utc)
-
         async with AsyncSessionLocal() as session:
-            cfg = await get_guild_cfg(session, str(ctx.guild.id))
+            cfg = await get_guild_cfg(session, ctx.guild.id)
             modstats = (cfg.modules or {}).get("modstats", {})
-            entry = modstats.get(str(member.id), {"actions": []})
-            actions = entry.get("actions", [])
+            their = modstats.get(str(member.id), {})
+        if not their:
+            return await send_simple(ctx, "Modstats", f"No moderation stats for {member.mention}.", HELIX_WARN)
+        emb = mkembed(f"Modstats — {member}", color=HELIX_PRIMARY)
+        actions = their.get("actions", [])
+        emb.add_field(name="Actions", value=str(len(actions)), inline=False)
+        for i, a in enumerate(reversed(actions[-5:]), 1):
+            emb.add_field(name=f"{i}. {a.get('type')}", value=a.get("timestamp"), inline=False)
+        emb.set_footer(text=FOOTER_TEXT, icon_url=(self.bot.user.display_avatar.url if getattr(self.bot.user,"display_avatar",None) else None))
+        await ctx.send(embed=emb)
 
-        if not actions:
-            return await send_info(ctx, "Moderation Stats", f"No moderation actions found for {member.mention}.")
-
-        # Define categories and counters
-        types = ["mute", "ban", "kick", "warn"]
-        counts = {t: {"7d": 0, "30d": 0, "all": 0} for t in types}
-
-        for a in actions:
+    # ---------- role toggle ----------
+    @commands.command(name="role")
+    @commands.has_permissions(manage_roles=True)
+    @commands.bot_has_permissions(manage_roles=True)
+    async def role_cmd(self, ctx: commands.Context, user_query: str, *, role_name: str):
+        target = None
+        if ctx.message.mentions:
+            target = ctx.message.mentions[0]
+        else:
+            # try MemberConverter first (supports ids, names)
             try:
-                ts = datetime.fromisoformat(a["timestamp"])
+                converter = commands.MemberConverter()
+                target = await converter.convert(ctx, user_query)
             except Exception:
-                continue
-            diff = (now - ts).days
-            t = a.get("type", "").lower()
-            if t not in counts:
-                continue
+                target = _resolve_member_by_query(ctx.guild, user_query)
+        if not target:
+            return await send_simple(ctx, "User Not Found", "Could not find that user — try mention, ID, or full username.", HELIX_WARN)
+        role = discord.utils.find(lambda r: r.name.lower() == role_name.lower(), ctx.guild.roles)
+        if not role:
+            role = discord.utils.find(lambda r: role_name.lower() in r.name.lower(), ctx.guild.roles)
+        if not role:
+            return await send_simple(ctx, "Role Not Found", f"I couldn't find a role named `{role_name}`.", HELIX_WARN)
+        bot_member = ctx.guild.me or ctx.guild.get_member(self.bot.user.id)
+        if bot_member and role >= bot_member.top_role:
+            return await send_simple(ctx, "Cannot Manage Role", "I cannot manage that role because it is equal or higher than my top role. Move my role above it.", HELIX_ERROR)
+        if isinstance(ctx.author, discord.Member) and role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+            return await send_simple(ctx, "Cannot Manage Role", "You can't manage a role equal or higher than your top role.", HELIX_WARN)
+        try:
+            if role in target.roles:
+                await target.remove_roles(role, reason=f"Toggled off by {ctx.author}")
+                emb = mkembed("🧩 Role Removed", f"Removed **{role.name}** from {target.mention}.", HELIX_SUCCESS)
+                emb.set_footer(text=FOOTER_TEXT, icon_url=(self.bot.user.display_avatar.url if getattr(self.bot.user,"display_avatar",None) else None))
+                await ctx.send(embed=emb)
+            else:
+                await target.add_roles(role, reason=f"Toggled on by {ctx.author}")
+                emb = mkembed("🧩 Role Added", f"Added **{role.name}** to {target.mention}.", HELIX_SUCCESS)
+                emb.set_footer(text=FOOTER_TEXT, icon_url=(self.bot.user.display_avatar.url if getattr(self.bot.user,"display_avatar",None) else None))
+                await ctx.send(embed=emb)
+            await self._log_case(ctx, target, "Role Change", f"Toggled {role.name}", None, True)
+        except discord.Forbidden:
+            return await send_simple(ctx, "Forbidden", "I don't have permission to add/remove that role.", HELIX_ERROR)
+        except Exception as e:
+            return await send_simple(ctx, "Failed", f"Failed to update role: `{e}`", HELIX_ERROR)
 
-            if diff <= 7:
-                counts[t]["7d"] += 1
-            if diff <= 30:
-                counts[t]["30d"] += 1
-            counts[t]["all"] += 1
-
-        # Totals
-        total_7d = sum(v["7d"] for v in counts.values())
-        total_30d = sum(v["30d"] for v in counts.values())
-        total_all = sum(v["all"] for v in counts.values())
-
-        embed = discord.Embed(
-            title="**Moderation Statistics**",
-            description=f"{member.display_name}",
-            color=COLORS["INFO"],
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.set_author(name=f"Stats for {member}", icon_url=getattr(member.display_avatar, "url", None))
-        embed.set_footer(text=f"ID: {member.id} • {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}")
-
-        for t in types:
-            embed.add_field(
-                name=f"{t.title()}s (last 7 days):",
-                value=str(counts[t]['7d']),
-                inline=True
-            )
-            embed.add_field(
-                name=f"{t.title()}s (last 30 days):",
-                value=str(counts[t]['30d']),
-                inline=True
-            )
-            embed.add_field(
-                name=f"{t.title()}s (all time):",
-                value=str(counts[t]['all']),
-                inline=True
-            )
-
-        embed.add_field(name="Total (last 7 days):", value=str(total_7d), inline=True)
-        embed.add_field(name="Total (last 30 days):", value=str(total_30d), inline=True)
-        embed.add_field(name="Total (all time):", value=str(total_all), inline=True)
-
-        await ctx.reply(embed=embed)
-
-
-
-
-
-# =============================================
+# Cog setup
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
