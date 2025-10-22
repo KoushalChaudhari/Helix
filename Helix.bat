@@ -1,21 +1,21 @@
 @echo off
-title JOAT Discord Bot
-echo ================================================
-echo              Initialising Helix ...
-echo ================================================
-echo.
-
-REM Navigate to the bot directory
+title Helix Bot
 cd /d "%~dp0"
 
-REM Activate virtual environment
-call .venv\Scripts\activate.bat
+echo ======================================
+echo 💠 Launching Helix Discord Bot...
+echo ======================================
+echo.
 
-REM Start the bot
+:: OPTIONAL: Activate virtual environment if you have one
+:: call venv\Scripts\activate
+
 python bot.py
 
 echo.
-echo ================================================
-echo Bot stopped or exited.
-echo Press any key to close this window...
+echo ======================================
+echo 💜 Helix has stopped or closed.
+echo If you see an error above, screenshot it for debugging.
+echo Press any key to exit...
+echo ======================================
 pause >nul
