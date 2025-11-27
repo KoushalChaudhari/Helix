@@ -36,7 +36,7 @@ class AccessControl(commands.Cog):
                 for gid, roles in raw.items()
             }
         except Exception:
-            # if file is corrupted, start fresh (you can log if you want)
+            # if file is corrupted, start fresh 
             self.guild_allowed_roles = {}
 
     def _save_allowlist(self):
@@ -59,11 +59,11 @@ class AccessControl(commands.Cog):
         if await ctx.bot.is_owner(ctx.author):
             return True
 
-        # DMs: only owner can use commands (you can relax this if you want)
+        # DMs
         if ctx.guild is None:
             return False
 
-        member: discord.Member = ctx.author  # in guild context this is always Member
+        member: discord.Member = ctx.author  
 
         # default: admin roles can use everything
         if member.guild_permissions.administrator:
@@ -133,3 +133,4 @@ class AccessControl(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AccessControl(bot))
+
