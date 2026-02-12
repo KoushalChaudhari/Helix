@@ -1,0 +1,257 @@
+====================================================
+HELIX BOT — FULL DEVELOPMENT SUMMARY (TECHNICAL)
+====================================================
+
+This document contains EVERYTHING implemented so far in the Helix Discord Bot,
+including commands, modules, systems, external libraries, helpers, and tools.
+
+You can paste this entire file into a new ChatGPT thread to continue seamlessly.
+
+----------------------------------------------------
+0. GLOBAL BOT STRUCTURE
+----------------------------------------------------
+The bot is structured into multiple cogs:
+
+• core.py        — main utility commands (help, prefix, stats, broadcast, etc.)
+• mod.py         — full moderation system
+• fun.py         — entertainment commands (gif, trivia, polls, etc.)
+• userinfo.py    — user profile commands
+• utility.py     — server utilities (role management, info commands)
+• secret.py      — clone system (owner-only)
+• access.py      — allowrole-based access control system
+• tools.py       — mkgif image/video → GIF converter
+• help_descriptions.json — central help reference file
+
+The bot uses:
+- Prefix commands via discord.ext.commands
+- Custom dynamic help command
+- JSON persistence for warning logs, modlogs, allowroles
+- Global checks for permission control
+- MoviePy for GIF conversions
+- Buttons, dropdowns, and reactions for interactions
+
+----------------------------------------------------
+1. CORE MODULE
+----------------------------------------------------
+Commands implemented:
+• help            — category/command-specific help
+• helpui          — interactive dropdown help
+• helprefresh     — reload help JSON
+• ping            — show latency
+• uptime          — show how long bot has been running
+• invite          — bot invite link
+• about           — bot info (version, library)
+• stats           — system metrics (guild count, RAM/CPU if present)
+• prefix          — view/set prefix per guild
+• feedback        — send feedback to devs
+• bug             — report bugs
+• broadcast       — owner-only broadcast to all guilds
+
+Tools & Methods Used:
+✔ Help system uses help_descriptions.json  
+✔ Core commands return embedded responses  
+✔ Prefix system stored in JSON or memory  
+✔ broadcast uses per-guild embed sending + confirmation  
+✔ Custom check for Admin/Owner privileges  
+
+----------------------------------------------------
+2. MODERATION MODULE
+----------------------------------------------------
+Commands:
+• modlog          — set/clear modlog channel
+• warn            — warns user with case numbers
+• warns           — shows all warns
+• clearwarns      — clear warns
+• kick, ban, unban
+• mute, unmute
+• timeout         — Discord timeout
+• reason          — edit modlog case reason
+• duration        — edit duration field
+• purge           — fully featured purge with filters
+• clean           — clear bot & command messages
+• lock/unlock     — channel lockdown
+• slowmode        — set slowmode
+• modstats (ms)   — moderation stats per moderator
+
+Internal Tech:
+✔ Persistent JSON for warns & modlogs  
+✔ Case numbering system  
+✔ All embed-styled moderation logs  
+✔ Hierarchy-safe actions (cannot affect higher roles)  
+✔ Error handling for missing permissions  
+✔ purge supports filters: bots, humans, links, invites, images, embeds, mentions, text  
+
+----------------------------------------------------
+3. FUN MODULE
+----------------------------------------------------
+Commands:
+• gif             — GIF search via Tenor / API
+• meme            — random meme fetcher
+• trivia          — full trivia game (multiple-choice)
+• triviacats      — available categories
+• poll            — button-based poll system
+• endpoll         — manually ends poll
+• 8ball           — witty/rude/polite mixed responses
+• roll (NdM)      — dice rolling (default 1d6)
+• rps             — rock-paper-scissors (with r/p/s)
+• quote           — prototype quote-image renderer
+
+Systems Used:
+✔ Buttons for poll voting  
+✔ Reaction system for trivia (A/B/C/D)  
+✔ Cooldowns on fun commands  
+✔ Random selection via Python's random  
+✔ Embed-driven UI  
+✔ Trivia uses OpenTriviaDB API  
+
+----------------------------------------------------
+4. USER INFORMATION MODULE
+----------------------------------------------------
+Commands:
+• userinfo        — advanced user inspector (global-aware)
+• avatar          — high-resolution avatar
+• banner          — profile banner
+• nick            — change nickname safely
+• roles           — list roles of member
+• id              — show IDs of objects (user, channel, role)
+
+Internal Logic:
+✔ userinfo gets:
+    - inferred role (Admin/Mod/Staff/Member)
+    - permissions breakdown
+    - all roles
+    - account creation & join date
+    - badges (if available)
+✔ avatar/banner support fallback logic
+✔ nick checks role hierarchy  
+✔ id handles multiple types  
+
+----------------------------------------------------
+5. UTILITY MODULE
+----------------------------------------------------
+Commands:
+• addrole              — create roles
+• delrole              — delete roles
+• role                 — toggle roles on users
+• rolesearch           — search roles by name
+• roleinfo             — full role breakdown + permissions
+• rolemembers          — list members with a role
+• serverinfo           — guild information
+• icon                 — server icon
+• channelinfo          — channel metadata
+
+Tech:
+✔ Color parsing  
+✔ Hierarchy checks  
+✔ List formatting with chunking  
+✔ Permission inference  
+✔ Fallbacks for missing attributes  
+
+----------------------------------------------------
+6. ACCESS CONTROL SYSTEM (allowrole)
+----------------------------------------------------
+• allowrole toggles roles allowed to use the bot  
+• Admins always allowed  
+• Owner always allowed  
+• JSON persistence stores selected roles per guild  
+• Global check prevents all commands for unauthorized roles  
+
+Tools Used:
+✔ bot.add_check()  
+✔ role ID persistence via JSON  
+✔ Handling of Admin → always allowed  
+
+----------------------------------------------------
+7. SECRET / CLONE MODULE
+----------------------------------------------------
+Commands:
+• clone N src dst  
+• clonemsg msgid dst  
+• countclone channel N  
+
+Capabilities:
+✔ Cross-server cloning  
+✔ Clones attachments  
+✔ Converts mentions to plaintext  
+✔ Skips system + webhook messages  
+✔ Does NOT clone the command invocation  
+✔ Splits long messages > 2000 characters  
+✔ Sends DM summary with:
+    - messages cloned
+    - messages skipped
+    - errors (if any)
+✔ Anti-spam (5s delay between sends)
+✔ Channel parsing allows:
+    - #channel mention
+    - raw ID
+    - channel link  
+✔ Error handling for permission issues  
+
+Internals:
+✔ Helper: _sanitize_content  
+✔ Helper: _split_long_message  
+✔ Helper: _resolve_channel  
+✔ Loop through history() → reversed  
+✔ Attachment downloading and reuploading  
+
+----------------------------------------------------
+8. TOOLS MODULE (NEW)
+----------------------------------------------------
+Command:
+• mkgif / makegif / togif  
+  - Converts image → GIF  
+  - Converts video → GIF  
+  - Supports reply or attachment  
+  - Cleans temp files  
+  - Duration limit: 8 seconds  
+  - FPS: 12  
+  - MoviePy 2.x import system:
+      from moviepy.video.io.VideoFileClip import VideoFileClip
+      from moviepy.video.VideoClip import ImageClip
+
+Tools Used:
+✔ MoviePy 2.x  
+✔ Temporary file system  
+✔ UUID-based file naming  
+✔ Error-safe cleanup  
+✔ Universal attachment handling  
+✔ Pylance-safe imports (no .editor)  
+
+----------------------------------------------------
+9. GENERAL BOT-WIDE IMPROVEMENTS
+----------------------------------------------------
+• Consistent embed theming  
+• Cooldowns across various commands  
+• Error messages that don't crash the bot  
+• Detailed logging for debugging  
+• Global allowlist enforcement  
+• Automatic prefix detection in clean command  
+• User-friendly DM messages for sensitive actions  
+• Integration-friendly help_descriptions.json  
+• Cog-based modular architecture  
+
+----------------------------------------------------
+10. DEPENDENCIES & LIBRARIES USED
+----------------------------------------------------
+• Discord.py (rewrite fork)
+• MoviePy 2.x  
+• Pillow (image backend)
+• imageio / imageio-ffmpeg  
+• requests / aiohttp for API calls  
+• Python built-in:
+  - os, json, uuid, random, datetime, typing  
+
+----------------------------------------------------
+11. RECOMMENDED NEXT STEPS
+----------------------------------------------------
+• Quote command: finalize background avatar blur + bubble styling  
+• Add GIF compression to always stay < 8 MB  
+• Webhook impersonation for clone()  
+• More conversion tools: gif2mp4, compress, upscale  
+• User XP/leveling system (optional)  
+• Starboard system  
+• Logging revamp with sqlite or MongoDB  
+
+====================================================
+END OF SUMMARY — READY TO PASTE IN NEW CHAT
+====================================================

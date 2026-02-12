@@ -3,6 +3,7 @@ import asyncio
 import json, os, contextlib
 import platform, sys, pkgutil
 import discord
+from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -165,6 +166,19 @@ class Core(commands.Cog):
             color=COLORS["SUCCESS"] if ws_ms < 200 else COLORS["WARNING"] if ws_ms < 400 else COLORS["ERROR"],
         )
         await ctx.send(embed=embed)
+
+# Slash version
+    @app_commands.command(name="ping", description="Check Helix latency")
+    async def ping_slash(self, interaction: discord.Interaction):
+        ws_ms = round(self.bot.latency * 1000, 2)
+
+        embed = mkembed(
+            title="🏓 Pong!",
+            desc=f"WebSocket latency: **{ws_ms} ms**",
+            color=COLORS["SUCCESS"] if ws_ms < 200 else COLORS["WARNING"] if ws_ms < 400 else COLORS["ERROR"],
+        )
+
+        await interaction.response.send_message(embed=embed)
 
 
 

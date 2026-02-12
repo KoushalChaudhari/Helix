@@ -13,10 +13,10 @@
         "stats",
         "prefix",
         "feedback",
-        "bug"
+        "bug",
+        "broadcast"
       ]
     },
-
     "Moderation": {
       "desc": "Moderation tools, case edits, channel controls, and cleanup.",
       "commands": [
@@ -29,6 +29,7 @@
         "unban",
         "mute",
         "unmute",
+        "timeout",
         "reason",
         "duration",
         "purge",
@@ -36,221 +37,665 @@
         "lock",
         "unlock",
         "slowmode",
-        "muterole",
-        "role",
         "modstats"
       ]
     },
-
-    "Logs": {
-      "desc": "Log setup and monitoring commands.",
-      "commands": [
-        "log",
-        "logs"
-      ]
-    },
-
     "Fun": {
       "desc": "Lightweight entertainment and content.",
       "commands": [
-        "gif"
+        "gif",
+        "meme",
+        "trivia",
+        "triviacats",
+        "poll",
+        "endpoll",
+        "8ball",
+        "roll",
+        "rps",
+        "quote"
+      ]
+    },
+    "User": {
+      "desc": "User/profile utilities: whois, avatars, banners, IDs, roles.",
+      "commands": [
+        "userinfo",
+        "avatar",
+        "banner",
+        "nick",
+        "roles",
+        "id"
+      ]
+    },
+    "Utility": {
+      "desc": "Server utilities: roles, server info, and channel metadata.",
+      "commands": [
+        "addrole",
+        "delrole",
+        "role",
+        "rolesearch",
+        "roleinfo",
+        "rolemembers",
+        "serverinfo",
+        "icon",
+        "channelinfo"
+      ]
+    },
+    "Access": {
+      "desc": "Global allowlist control for who can use the bot.",
+      "commands": [
+        "allowrole"
+      ]
+    },
+    "Owner": {
+      "desc": "Owner-only tools for cloning/copying messages across channels/servers.",
+      "commands": [
+        "clone",
+        "countclone",
+        "clonemsg"
       ]
     }
   },
 
   "commands": {
     "help": {
-      "brief": "Show the help menu.",
-      "desc": "Displays all commands and categories available to you.",
+      "brief": "Show help for commands or categories.",
+      "desc": "Displays an overview of categories, or detailed info for a given category/command.",
       "usage": [
         "{p}help",
         "{p}help Moderation",
-        "{p}help commandname"
+        "{p}help ban"
+      ],
+      "subcommands": [
+        {
+          "name": "overview",
+          "brief": "List all categories and their commands.",
+          "usage": ["{p}help"]
+        },
+        {
+          "name": "category",
+          "brief": "Show commands in a category with short descriptions.",
+          "usage": ["{p}help Moderation", "{p}help Core", "{p}help Fun"]
+        },
+        {
+          "name": "command",
+          "brief": "Show usage, aliases, and details for a command.",
+          "usage": ["{p}help ban", "{p}help purge"]
+        }
       ]
     },
+
+    "helpui": {
+      "brief": "Open the interactive help menu.",
+      "desc": "Opens a dropdown UI to browse categories → commands → example usages.",
+      "usage": ["{p}helpui"]
+    },
+
+    "helprefresh": {
+      "brief": "Reload help data from JSON.",
+      "desc": "Reloads the local help_descriptions.json without restarting the bot (requires Manage Server).",
+      "usage": ["{p}helprefresh"]
+    },
+
     "ping": {
-      "brief": "Check bot latency.",
-      "desc": "Shows how long Helix takes to respond to a message.",
-      "usage": [
-        "{p}ping"
-      ]
+      "brief": "Check the bot’s latency.",
+      "desc": "Shows the current WebSocket latency in milliseconds.",
+      "usage": ["{p}ping"]
     },
+
+    "uptime": {
+      "brief": "Show how long the bot has been online.",
+      "desc": "Displays the time elapsed since the last restart.",
+      "usage": ["{p}uptime"]
+    },
+
+    "invite": {
+      "brief": "Get the bot’s invite link (Admin).",
+      "desc": "Sends an invite link button using Administrator permissions.",
+      "usage": ["{p}invite"]
+    },
+
+    "about": {
+      "brief": "Info about the bot.",
+      "desc": "Shows overview, version, developer, library versions, and quick stats.",
+      "usage": ["{p}about"]
+    },
+
+    "stats": {
+      "brief": "Display bot/system statistics.",
+      "desc": "Shows guilds, members, channels, commands loaded, latency, uptime, and CPU/RAM (when available).",
+      "usage": ["{p}stats"]
+    },
+
     "prefix": {
-      "brief": "Change or view the bot's prefix.",
-      "desc": "Set or check the prefix used for commands in your server.",
+      "brief": "View or change the server prefix.",
+      "desc": "Shows the current prefix, or updates it (requires Manage Server to change).",
       "usage": [
         "{p}prefix",
-        "{p}prefix ;"
+        "{p}prefix !",
+        "{p}prefix ?"
       ]
     },
+
+    "feedback": {
+      "brief": "Send feedback about the bot.",
+      "desc": "DMs or logs a feedback message for the developers.",
+      "usage": ["{p}feedback I love this bot"]
+    },
+
+    "bug": {
+      "brief": "Report a bug to the developers.",
+      "desc": "Sends a quick bug report describing what went wrong.",
+      "usage": ["{p}bug Command X crashes when I do Y"]
+    },
+
+    "broadcast": {
+      "brief": "Broadcast an announcement to all servers.",
+      "desc": "Owner-only: sends a styled embed announcement to every guild where the bot can speak, after a confirmation step.",
+      "usage": [
+        "{p}broadcast We just shipped a new feature!",
+        "{p}broadcast Maintenance is scheduled in 30 minutes."
+      ]
+    },
+
     "modlog": {
-      "brief": "Set or view the moderation log channel.",
-      "desc": "Defines the channel where Helix will post moderation case logs.",
+      "brief": "Configure the mod-log channel.",
+      "desc": "Sets or clears the channel where moderation actions are logged.",
       "usage": [
-        "{p}modlog",
-        "{p}modlog #mod-logs"
+        "{p}modlog #mod-log",
+        "{p}modlog off"
       ]
     },
+
     "warn": {
-      "brief": "Warn a member.",
-      "desc": "Gives a warning to a member and logs the case.",
+      "brief": "Warn a user and log the case.",
+      "desc": "Issues a warning to a user, optionally DMing them, and logs the case in the mod-log with a case number.",
       "usage": [
-        "{p}warn @User [reason]"
+        "{p}warn @user Spamming in chat",
+        "{p}warn 123456789012345678 Advertising in DMs"
       ]
     },
+
     "warns": {
-      "brief": "View warnings for a member.",
-      "desc": "Shows all warnings a user has received.",
+      "brief": "List warnings for a user.",
+      "desc": "Shows all recorded warns for a user, including case numbers and reasons.",
       "usage": [
-        "{p}warns",
-        "{p}warns @User"
+        "{p}warns @user",
+        "{p}warns 123456789012345678"
       ]
     },
+
     "clearwarns": {
-      "brief": "Clear warnings for a member.",
-      "desc": "Removes all warnings issued to a specific user.",
+      "brief": "Clear a user’s warnings.",
+      "desc": "Clears all warns for a user, or a specific case if provided.",
       "usage": [
-        "{p}clearwarns @User"
+        "{p}clearwarns @user",
+        "{p}clearwarns @user 12"
       ]
     },
+
     "kick": {
-      "brief": "Kick a member.",
-      "desc": "Kicks a member from the server and logs the case.",
+      "brief": "Kick a member from the server.",
+      "desc": "Removes a member from the guild and logs a moderation case.",
       "usage": [
-        "{p}kick @User [reason]"
+        "{p}kick @user Breaking rules",
+        "{p}kick 123456789012345678"
       ]
     },
+
     "ban": {
-      "brief": "Ban a member.",
-      "desc": "Bans a user from the server and logs the case.",
+      "brief": "Ban a user from the server.",
+      "desc": "Bans a user by mention or ID, optionally deleting recent messages, and logs the action.",
       "usage": [
-        "{p}ban @User [reason]"
+        "{p}ban @user severe harassment",
+        "{p}ban 123456789012345678 7d Spamming alt accounts"
       ]
     },
+
     "unban": {
-      "brief": "Unban a user.",
-      "desc": "Unbans a user by ID and logs the case.",
+      "brief": "Unban a previously banned user.",
+      "desc": "Lifts a ban using a user ID or name#discrim and logs the unban.",
       "usage": [
-        "{p}unban [user_id] [reason]"
+        "{p}unban 123456789012345678",
+        "{p}unban SomeUser#0001"
       ]
     },
+
     "mute": {
-      "brief": "Mute a member.",
-      "desc": "Adds the Muted role to a user and logs the case.",
+      "brief": "Legacy mute (if configured).",
+      "desc": "Mutes a member by assigning a mute role or using your configured system, then logs the case.",
       "usage": [
-        "{p}mute @User [reason]"
+        "{p}mute @user 10m Being disruptive",
+        "{p}mute @user"
       ]
     },
+
     "unmute": {
-      "brief": "Unmute a member.",
-      "desc": "Removes the Muted role from a user and logs the case.",
+      "brief": "Remove a mute from a user.",
+      "desc": "Reverses a previous mute and logs the unmute case.",
       "usage": [
-        "{p}unmute @User"
+        "{p}unmute @user",
+        "{p}unmute 123456789012345678"
       ]
     },
+
+    "timeout": {
+      "brief": "Apply a Discord timeout.",
+      "desc": "Uses native Discord timeouts for a specified duration (e.g., 10m, 2h, 1d) and logs the action.",
+      "usage": [
+        "{p}timeout @user 10m Spamming",
+        "{p}timeout @user 1h Being rude"
+      ]
+    },
+
     "reason": {
-      "brief": "Edit a case reason.",
-      "desc": "Updates the reason for an existing moderation case.",
+      "brief": "Edit the reason of a logged case.",
+      "desc": "Updates the reason field on an existing moderation case.",
       "usage": [
-        "{p}reason [case_id] [new reason]"
+        "{p}reason 15 Updated reason: misunderstanding",
+        "{p}reason 21 Appeal accepted"
       ]
     },
+
     "duration": {
-      "brief": "Edit a case duration.",
-      "desc": "Sets or changes the duration shown in a case log.",
+      "brief": "Edit the duration of a logged case.",
+      "desc": "Changes the stored duration on a case (for mutes/timeouts) in the mod-log index.",
       "usage": [
-        "{p}duration [case_id] [duration]"
+        "{p}duration 15 30m",
+        "{p}duration 10 1d"
       ]
     },
+
     "purge": {
-      "brief": "Bulk delete messages.",
-      "desc": "Deletes a number of messages from the current channel.",
+      "brief": "Bulk delete messages with filters.",
+      "desc": "Deletes up to a given number of messages with optional filters for bots, humans, images, links, etc.",
       "usage": [
-        "{p}purge [amount]",
-        "{p}purge 100 user @User",
-        "{p}purge 200 contains spam"
+        "{p}purge 50",
+        "{p}purge 100 bots",
+        "{p}purge 200 links"
+      ],
+      "subcommands": [
+        {
+          "name": "links",
+          "brief": "Delete messages that contain URLs.",
+          "usage": ["{p}purge 50 links"]
+        },
+        {
+          "name": "invites",
+          "brief": "Delete messages containing invite links.",
+          "usage": ["{p}purge 100 invites"]
+        },
+        {
+          "name": "images",
+          "brief": "Delete messages that contain image attachments.",
+          "usage": ["{p}purge 50 images"]
+        },
+        {
+          "name": "mentions",
+          "brief": "Delete messages that mention users/roles.",
+          "usage": ["{p}purge 100 mentions"]
+        },
+        {
+          "name": "embeds",
+          "brief": "Delete messages that contain embeds.",
+          "usage": ["{p}purge 100 embeds"]
+        },
+        {
+          "name": "bots",
+          "brief": "Delete messages sent by bots.",
+          "usage": ["{p}purge 200 bots"]
+        },
+        {
+          "name": "humans",
+          "brief": "Delete messages sent by non-bot users.",
+          "usage": ["{p}purge 200 humans"]
+        },
+        {
+          "name": "text",
+          "brief": "Delete messages with plain text (no attachments).",
+          "usage": ["{p}purge 150 text"]
+        }
       ]
     },
+
     "clean": {
-      "brief": "Delete Helix messages.",
-      "desc": "Deletes bot messages sent by Helix in the current channel.",
+      "brief": "Delete bot & command messages.",
+      "desc": "Erases Helix’s messages and command invocations in the channel. Automatically detects the current prefix.",
       "usage": [
-        "{p}clean [amount]"
+        "{p}clean",
+        "{p}clean 100"
       ]
     },
+
     "lock": {
-      "brief": "Lock a channel.",
-      "desc": "Prevents @everyone from sending messages in a channel.",
+      "brief": "Lock a channel for @everyone.",
+      "desc": "Temporarily prevents sending messages in a text channel until unlocked.",
       "usage": [
         "{p}lock",
-        "{p}lock #channel [reason]"
+        "{p}lock #general Raid protection on"
       ]
     },
+
     "unlock": {
       "brief": "Unlock a channel.",
-      "desc": "Allows @everyone to send messages in a locked channel again.",
+      "desc": "Restores send-message permissions for @everyone in the channel.",
       "usage": [
         "{p}unlock",
-        "{p}unlock #channel"
+        "{p}unlock #general"
       ]
     },
+
     "slowmode": {
       "brief": "Set or disable slowmode.",
-      "desc": "Sets a message cooldown in the current channel.",
+      "desc": "Sets a cooldown (in seconds) between messages. Use 'off' to disable.",
       "usage": [
-        "{p}slowmode [seconds]",
+        "{p}slowmode 5",
         "{p}slowmode off"
+      ],
+      "subcommands": [
+        {
+          "name": "set",
+          "brief": "Set slowmode in seconds.",
+          "usage": [
+            "{p}slowmode 5",
+            "{p}slowmode 10"
+          ]
+        },
+        {
+          "name": "off",
+          "brief": "Disable slowmode.",
+          "usage": [
+            "{p}slowmode off"
+          ]
+        }
       ]
     },
-    "muterole": {
-      "brief": "Set or view the muted role for mutes.",
-      "desc": "Defines which role Helix applies when muting members. Use this after creating your own Muted role.",
-      "usage": [
-        "{p}muterole",
-        "{p}muterole @Muted",
-        "{p}muterole none"
-      ]
-    },
-    "role": {
-      "brief": "Add or remove a role from a user.",
-      "desc": "Toggles a role for a user by mention, ID, or username.",
-      "usage": [
-        "{p}role @User RoleName",
-        "{p}role 123456789012345678 RoleName",
-        "{p}role Username RoleName"
-      ]
-    },
+
     "modstats": {
-      "brief": "Show moderation stats for a mod.",
-      "desc": "Displays a summary of moderation actions performed by a staff member.",
+      "brief": "Show moderation stats per mod.",
+      "desc": "Displays how many actions (warns, kicks, bans, etc.) each moderator has logged in this server, with optional filter by moderator.",
       "usage": [
         "{p}modstats",
-        "{p}modstats @User"
+        "{p}modstats @Moderator"
       ]
     },
-    "log": {
-      "brief": "Set log channels for moderation, roles, messages, etc.",
-      "desc": "Links server events to log channels. Use different channels for each log type.",
-      "usage": [
-        "{p}log moderation #mod-logs",
-        "{p}log roles #role-logs",
-        "{p}log messages #msg-logs",
-        "{p}log profile #profile-logs",
-        "{p}log server #server-logs"
-      ]
-    },
-    "logs": {
-      "brief": "Show all log configurations.",
-      "desc": "Displays which channels are currently assigned for each log type.",
-      "usage": [
-        "{p}logs status"
-      ]
-    },
+
     "gif": {
-      "brief": "Send a random GIF.",
-      "desc": "Displays a random fun GIF in chat.",
+      "brief": "Send a random GIF matching your query.",
+      "desc": "Searches a GIF provider and returns a relevant random GIF inside an embed.",
       "usage": [
-        "{p}gif"
+        "{p}gif dancing cat",
+        "{p}gif victory"
+      ]
+    },
+
+    "meme": {
+      "brief": "Send a random meme.",
+      "desc": "Fetches a random meme from a meme API/subreddit and sends it as an embed.",
+      "usage": [
+        "{p}meme",
+        "{p}meme again"
+      ]
+    },
+
+    "trivia": {
+      "brief": "Start a trivia question.",
+      "desc": "Starts a multiple-choice trivia question, optionally filtered by category and difficulty. Users answer with reaction buttons A/B/C/D.",
+      "usage": [
+        "{p}trivia",
+        "{p}trivia anime",
+        "{p}trivia anime hard",
+        "{p}trivia general easy"
+      ]
+    },
+
+    "triviacats": {
+      "brief": "List available trivia categories.",
+      "desc": "Shows the supported trivia categories you can pass into the {p}trivia command (e.g. anime, games, movies).",
+      "usage": [
+        "{p}triviacats",
+        "{p}triviacats anime"
+      ]
+    },
+
+    "poll": {
+      "brief": "Create a button-based poll.",
+      "desc": "Creates a poll with clickable buttons for each option. Users can vote with one click.",
+      "usage": [
+        "{p}poll Which map? op: Map A, Map B, Map C",
+        "{p}poll Best anime op: AOT, JJK, OP"
+      ]
+    },
+
+    "endpoll": {
+      "brief": "Manually end a poll.",
+      "desc": "Ends an active poll created by {p}poll using its message ID and posts the final results.",
+      "usage": [
+        "{p}endpoll 123456789012345678"
+      ]
+    },
+
+    "8ball": {
+      "brief": "Ask the magic 8-ball.",
+      "desc": "Answers a yes/no style question with a mix of witty, rude, and polite responses.",
+      "usage": [
+        "{p}8ball Will I ace this exam?",
+        "{p}8ball Should I pull for this banner?"
+      ]
+    },
+
+    "roll": {
+      "brief": "Roll dice like NdM.",
+      "desc": "Rolls dice in NdM format (e.g. 2d6, 1d20). If no arguments are provided, defaults to a single d6.",
+      "usage": [
+        "{p}roll",
+        "{p}roll 1d20",
+        "{p}roll 3d6"
+      ]
+    },
+
+    "rps": {
+      "brief": "Play Rock-Paper-Scissors against the bot.",
+      "desc": "Choose rock/paper/scissors (or r/p/s). The bot replies with its choice and the result.",
+      "usage": [
+        "{p}rps rock",
+        "{p}rps paper",
+        "{p}rps r",
+        "{p}rps s"
+      ]
+    },
+
+    "quote": {
+      "brief": "Generate a quote image from a message.",
+      "desc": "Takes a message by reply or ID/link and renders it as a quote card image using the author’s avatar as the background. Skips bot messages and very long content.",
+      "usage": [
+        "{p}quote",
+        "{p}quote 123456789012345678",
+        "{p}quote https://discord.com/channels/...",
+        "{p}quote (used as a reply to a message)"
+      ]
+    },
+
+    "userinfo": {
+      "brief": "Show info about a user (global-aware).",
+      "desc": "Displays detailed info about a user: ID, creation time, join time, badges, roles in this server, inferred role (Admin/Mod/Staff/etc.), and key permissions. Works with mentions, IDs, profile URLs, or by default yourself.",
+      "usage": [
+        "{p}userinfo",
+        "{p}userinfo @user",
+        "{p}userinfo 123456789012345678",
+        "{p}userinfo https://discord.com/users/123456789012345678"
+      ]
+    },
+
+    "avatar": {
+      "brief": "Show a user’s avatar.",
+      "desc": "Shows a user’s avatar in maximum resolution with quick links to PNG/JPG/WebP/GIF variants where available.",
+      "usage": [
+        "{p}avatar",
+        "{p}avatar @user",
+        "{p}avatar 123456789012345678"
+      ]
+    },
+
+    "banner": {
+      "brief": "Show a user’s profile banner.",
+      "desc": "Fetches and displays the user’s banner (if they have one) at high resolution with a direct image preview.",
+      "usage": [
+        "{p}banner",
+        "{p}banner @user",
+        "{p}banner 123456789012345678"
+      ]
+    },
+
+    "nick": {
+      "brief": "Change a member’s nickname.",
+      "desc": "Changes the nickname of a member (if allowed by hierarchy). Fails gracefully on unmanageable or higher-role targets.",
+      "usage": [
+        "{p}nick @user New Nickname",
+        "{p}nick 123456789012345678 CoolDude"
+      ]
+    },
+
+    "roles": {
+      "brief": "List a user’s roles in this server.",
+      "desc": "Shows all roles a member has in the current guild, sorted by hierarchy.",
+      "usage": [
+        "{p}roles",
+        "{p}roles @user",
+        "{p}roles 123456789012345678"
+      ]
+    },
+
+    "id": {
+      "brief": "Show IDs of users, channels, roles, and guilds.",
+      "desc": "Quick helper to print useful IDs. When used without arguments, shows your ID and the current guild/channel IDs.",
+      "usage": [
+        "{p}id",
+        "{p}id @user",
+        "{p}id #channel",
+        "{p}id @role"
+      ]
+    },
+
+    "addrole": {
+      "brief": "Create a new role.",
+      "desc": "Creates a new role with optional flags for color, hoist, and mentionability.",
+      "usage": [
+        "{p}addrole MyRole",
+        "{p}addrole VIP --color #ff8800 --hoist yes --mentionable yes"
+      ]
+    },
+
+    "delrole": {
+      "brief": "Delete a role by mention, ID, or name.",
+      "desc": "Deletes a role if the bot’s top role is higher. Useful for cleaning up unused roles.",
+      "usage": [
+        "{p}delrole @OldRole",
+        "{p}delrole 123456789012345678",
+        "{p}delrole Some Role Name"
+      ]
+    },
+
+    "role": {
+      "brief": "Toggle a role on a member.",
+      "desc": "Adds or removes a role from a member, checking hierarchy and permissions. Accepts mention, ID, or name for the role.",
+      "usage": [
+        "{p}role @user @role",
+        "{p}role @user RoleName",
+        "{p}role @user 123456789012345678"
+      ]
+    },
+
+    "rolesearch": {
+      "brief": "Search for roles by name.",
+      "desc": "Finds roles whose names contain the given text (case-insensitive), showing mentions and IDs, sorted by position.",
+      "usage": [
+        "{p}rolesearch mod",
+        "{p}rolesearch helper",
+        "{p}rolesearch vip"
+      ]
+    },
+
+    "roleinfo": {
+      "brief": "Show detailed information about a role.",
+      "desc": "Shows ID, position, color, member count, creation date, whether it’s hoisted/managed/mentionable, plus an inferred role significance and key permissions (excluding common user permissions).",
+      "usage": [
+        "{p}roleinfo @role",
+        "{p}roleinfo 123456789012345678",
+        "{p}roleinfo Moderator"
+      ]
+    },
+
+    "rolemembers": {
+      "brief": "List members that have a given role.",
+      "desc": "Lists all members with the specified role, sorted by top-role position and join date.",
+      "usage": [
+        "{p}rolemembers @role",
+        "{p}rolemembers 123456789012345678",
+        "{p}rolemembers Booster"
+      ]
+    },
+
+    "serverinfo": {
+      "brief": "Show info about the current server.",
+      "desc": "Displays server ID, owner, member stats, channel counts, roles count, and creation time with the server icon thumbnail.",
+      "usage": [
+        "{p}serverinfo"
+      ]
+    },
+
+    "icon": {
+      "brief": "Show the server’s icon.",
+      "desc": "Sends the server icon in maximum resolution as an embed image.",
+      "usage": [
+        "{p}icon"
+      ]
+    },
+
+    "channelinfo": {
+      "brief": "Show info about a channel.",
+      "desc": "Shows details about a channel (text/voice/stage/forum/thread), including ID, type, category, position, creation time, and extra fields like topic, NSFW, slowmode, bitrate, etc.",
+      "usage": [
+        "{p}channelinfo",
+        "{p}channelinfo #general",
+        "{p}channelinfo 123456789012345678"
+      ]
+    },
+
+    "allowrole": {
+      "brief": "Toggle a role’s access to the bot.",
+      "desc": "Administrator-only: adds or removes a role from the global allowlist for this server. Admins and the bot owner are always allowed regardless.",
+      "usage": [
+        "{p}allowrole @Trusted",
+        "{p}allowrole 123456789012345678"
+      ]
+    },
+
+    "clone": {
+      "brief": "Clone the last N messages between channels (owner-only).",
+      "desc": "Owner-only cross-server cloning tool. Clones the last N messages from a source channel (or message link) to a target channel, skipping system/webhook messages, converting mentions to plaintext, and preserving attachments as much as possible. Includes anti-spam delays and a DM’d summary.",
+      "usage": [
+        "{p}clone 25 #source #target",
+        "{p}clone 50 https://discord.com/channels/srcGuild/srcChan https://discord.com/channels/tgtGuild/tgtChan",
+        "{p}clone 10 123456789012345678 234567890123456789"
+      ]
+    },
+
+    "countclone": {
+      "brief": "Test how many recent messages are cloneable.",
+      "desc": "Counts how many of the last N messages in a channel the bot would be able to clone (checking length, attachments, and basic constraints). Useful before running {p}clone.",
+      "usage": [
+        "{p}countclone #channel 50",
+        "{p}countclone #logs 100",
+        "{p}countclone 123456789012345678 25"
+      ]
+    },
+
+    "clonemsg": {
+      "brief": "Clone a single message into another channel.",
+      "desc": "Owner-only: clones one specific message by ID into a target channel, including text and attachments, obeying the same sanitisation rules as the bulk clone.",
+      "usage": [
+        "{p}clonemsg 123456789012345678 #target",
+        "{p}clonemsg 123456789012345678 234567890123456789"
       ]
     }
   }
