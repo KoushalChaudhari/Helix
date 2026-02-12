@@ -1,21 +1,21 @@
 @echo off
-title Helix Bot
-cd /d "%~dp0"
-
-echo ======================================
-echo 💠 Launching Helix Discord Bot...
-echo ======================================
+title Helix Discord Bot
+echo ================================================
+echo              Initialising Helix ...
+echo ================================================
 echo.
 
-:: OPTIONAL: Activate virtual environment if you have one
-:: call venv\Scripts\activate
+REM Navigate to the bot directory
+cd /d "%~dp0"
 
+REM Activate virtual environment
+call .venv\Scripts\activate.bat
+
+REM Start the bot
 python bot.py
 
 echo.
-echo ======================================
-echo 💜 Helix has stopped or closed.
-echo If you see an error above, screenshot it for debugging.
-echo Press any key to exit...
-echo ======================================
+echo ================================================
+echo Bot stopped or exited.
+echo Press any key to close this window...
 pause >nul

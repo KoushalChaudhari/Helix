@@ -1,14 +1,17 @@
 import aiohttp
 import html
 import random
-import re, io, textwrap, contextlib
+import re, io, os
 import asyncio
 from datetime import datetime, timezone
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 import discord
 from cogs.core import mkembed, COLORS
 from config import TENOR_KEY
+from PIL import Image, ImageDraw, ImageFont
+import requests
+import textwrap
+
 
 
 
@@ -875,202 +878,331 @@ class Fun(commands.Cog):
 # ===================================================================
 #                        Quote Command
 # ===================================================================
+
+    # ------------------ Quote command ------------------
     @commands.command(name="quote")
-    @commands.cooldown(1, 6, commands.BucketType.user)
-    async def quote(self, ctx: commands.Context, *, message_ref: str | None = None):
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def quote_cmd(self, ctx: commands.Context, *, text: str = None):
         """
-        Create a stylized quote image from a message.
+        Generate a quote image.
         Usage:
-          - Reply to a message, then send: ;quote
-          - ;quote <message_id>
-          - ;quote <message_link>
+            ;quote <text>
+            (or reply to a message with ;quote — will use the replied message's text and author)
         """
-        msg = await self._q_resolve_message(ctx, message_ref)
-        if not msg:
-            return await ctx.reply(embed=mkembed("❌ Message Not Found",
-                "Reply to a message or provide a valid **message ID/link**.",
-                COLORS["ERROR"]))
-        if msg.author.bot:
-            return await ctx.reply(embed=mkembed("🚫 Not Allowed",
-                "I don’t make quotes from **bot messages**.",
-                COLORS["ERROR"]))
+        # If the command is used as a reply and no text arg was provided,
+        # use the replied-to message's content as quote text and its author/avatar.
+        avatar_url = str(ctx.author.display_avatar.replace(size=1024).url)
+        author_name = f"- {ctx.author.display_name}"
+        author_tag = f"@{ctx.author.name}"
 
-        text = (msg.content or "").strip()
-        # basic limits to avoid huge canvases
-        MAX_CHARS, MAX_LINES = 240, 8
-        if not text:
-            return await ctx.reply(embed=mkembed("⚠️ Empty Message",
-                "That message has no text to quote.",
-                COLORS["WARNING"]))
-        if len(text) > MAX_CHARS or text.count("\n") >= MAX_LINES:
-            return await ctx.reply(embed=mkembed("⚠️ Too Long",
-                f"Keep it under **{MAX_CHARS} chars** or **{MAX_LINES} lines**.",
-                COLORS["WARNING"]))
+        if not text and ctx.message.reference and ctx.message.reference.message_id:
+            try:
+                ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+                # prefer replied message's content if present
+                if ref_msg.content and ref_msg.content.strip():
+                    text = ref_msg.content.strip()
+                    avatar_url = str(ref_msg.author.display_avatar.replace(size=1024).url)
+                    author_name = f"- {ref_msg.author.display_name}"
+                    author_tag = f"@{ref_msg.author.name}"
+            except Exception:
+                # fallback to default behaviour (use the invoker's text/avatar)
+                pass
 
-        # Render image (always produce a file)
+        if not text or not text.strip():
+            await ctx.reply("❌ Please provide text, or reply to a message containing the text you want quoted.")
+            return
+
         try:
-            file = await self._q_render_card(ctx, msg, text)
+            img_bytes = await self._generate_quote_image_async(
+                quote_text=text,
+                author_name=author_name,
+                author_tag=author_tag,
+                avatar_url=avatar_url,
+                base_font_path="assets/fonts/YourNiceFont.ttf"  # adjust if you have a font
+            )
+            await ctx.send(file=discord.File(img_bytes, filename="quote.png"))
         except Exception as e:
-            # last-resort: still return a minimal image rather than an embed
-            file = self._q_minimal_card(f"“{text}”\n— {msg.author.display_name}")
+            await ctx.reply(f"⚠️ Failed to create quote image: `{type(e).__name__}: {e}`")
 
-        em = mkembed("💬 Quote", f"[Jump to original message]({msg.jump_url})", COLORS["INFO"])
-        em.set_footer(text=f'{msg.author} • {msg.created_at.strftime("%Y-%m-%d %H:%M")}')
-        em.set_image(url="attachment://quote.png")
-        await ctx.reply(embed=em, file=file)
+    # ------------------ Helpers (static/async-friendly) ------------------
 
-# ========================== QUOTE HELPERS ==========================
-    async def _q_resolve_message(self, ctx: commands.Context, ref: str | None):
-        # reply
-        if ctx.message.reference and ctx.message.reference.message_id:
-            with contextlib.suppress(Exception):
-                return await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    @staticmethod
+    def _download_image_to_pil(url: str) -> Image.Image:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return Image.open(io.BytesIO(resp.content)).convert("RGBA")
 
-        if not ref:
-            return None
+    @staticmethod
+    def _cover_resize_and_crop(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
+        src_w, src_h = img.size
+        scale = max(target_w / src_w, target_h / src_h)
+        new_w = int(src_w * scale)
+        new_h = int(src_h * scale)
+        img = img.resize((new_w, new_h), resample=Image.LANCZOS)
+        left = (new_w - target_w) // 2
+        top = (new_h - target_h) // 2
+        return img.crop((left, top, left + target_w, top + target_h))
 
-        ref = ref.strip().strip("<>")
-        # link
-        m = re.search(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)", ref)
-        if m:
-            gid, cid, mid = map(int, m.groups())
-            try:
-                ch = None
-                if ctx.guild and ctx.guild.id == gid:
-                    ch = ctx.guild.get_channel(cid) or await ctx.guild.fetch_channel(cid)
-                else:
-                    ch = await self.bot.fetch_channel(cid)
-                return await ch.fetch_message(mid)
-            except Exception:
-                return None
-
-        # raw id (current channel)
-        if re.fullmatch(r"\d{15,25}", ref):
-            with contextlib.suppress(Exception):
-                return await ctx.channel.fetch_message(int(ref))
-        return None
-
-    # ---------- robust font loader ----------
-    def _q_font(self, size: int):
-        for p in (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-        ):
-            try:
-                return ImageFont.truetype(p, size)
-            except Exception:
-                continue
-        return ImageFont.load_default()
-
-    # ---------- wrap by pixel width ----------
-    def _q_wrap(self, draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_w: int):
+    @staticmethod
+    def _wrap_text(draw: ImageDraw.Draw, text: str, font: ImageFont.FreeTypeFont, max_width: int):
+        # returns list of lines that fit in max_width
         words = text.split()
-        lines, cur = [], ""
-        for w in words:
-            test = (cur + " " + w).strip()
+        if not words:
+            return []
+        lines = []
+        current = words[0]
+        for w in words[1:]:
+            test = current + " " + w
             bbox = draw.textbbox((0, 0), test, font=font)
-            if bbox[2] - bbox[0] <= max_w:
-                cur = test
+            if bbox[2] - bbox[0] <= max_width:
+                current = test
             else:
-                if cur:
-                    lines.append(cur)
-                cur = w
-        if cur:
-            lines.append(cur)
+                lines.append(current)
+                current = w
+        lines.append(current)
         return lines
 
-    # ---------- main renderer (always produces an image) ----------
-    async def _q_render_card(self, ctx: commands.Context, msg: discord.Message, text: str) -> discord.File:
-        """Render quote with avatar background + translucent speech bubble."""
-        from PIL import Image, ImageDraw, ImageFont, ImageFilter
-        import io, contextlib
+    async def _generate_quote_image_async(
+        self,
+        *,
+        quote_text: str,
+        author_name: str,
+        author_tag: str,
+        avatar_url: str,
+        canvas_size=(1280, 720),
+        left_fraction=0.35,
+        base_font_path: str = None,
+    ) -> io.BytesIO:
+        """
+        Async wrapper that runs the synchronous image generation in a threadpool
+        to avoid blocking the event loop.
+        """
+        # Run blocking PIL/requests code in a thread
+        return await asyncio.to_thread(
+            self._generate_quote_image,
+            quote_text,
+            author_name,
+            author_tag,
+            avatar_url,
+            canvas_size,
+            left_fraction,
+            base_font_path,
+        )
 
-        W, H = 1280, 720
-        bg = Image.new("RGB", (W, H), (16, 18, 24))
-        draw = ImageDraw.Draw(bg)
+    def _generate_quote_image(
+        self,
+        quote_text: str,
+        author_name: str,
+        author_tag: str,
+        avatar_url: str,
+        canvas_size=(1280, 720),
+        left_fraction=0.35,            # ignored now (we compute left_w to fit whole pfp)
+        base_font_path: str = None,
+    ) -> io.BytesIO:
+        """
+        Synchronous image generation. Returns BytesIO (PNG).
+        Left area will be sized to fit a *full square* avatar (height x height),
+        so the avatar isn't cropped out. Right side is a tinted gradient based
+        on avatar's dominant color transitioning to dark.
+        """
+        W, H = canvas_size
 
-        # 1️⃣ avatar background (blurred, scaled)
-        with contextlib.suppress(Exception):
-            av_bytes = await msg.author.display_avatar.read()
-            avatar = Image.open(io.BytesIO(av_bytes)).convert("RGB").resize((W, H))
-            avatar = avatar.filter(ImageFilter.GaussianBlur(20))
-            bg.paste(avatar)
+        # Make left width large enough to hold the entire square avatar:
+        # left_w = min(H, int(W * 0.6)) ensures we don't hog the whole canvas
+        left_w = min(H, int(W * 0.6))
+        right_w = W - left_w
 
-        # 2️⃣ speech bubble panel (≈75 % width)
-        bubble_w = int(W * 0.75)
-        bubble_h = int(H * 0.6)
-        bx = (W - bubble_w) // 2
-        by = (H - bubble_h) // 2
-        bubble = (bx, by, bx + bubble_w, by + bubble_h)
-        draw.rounded_rectangle(bubble, radius=40, outline=(255,255,255,30), width=3)
+        # paddings for text area
+        pad_x = 60
+        pad_top = 110
+        usable_w = right_w - 2 * pad_x
+        if usable_w < 200:
+            # fallback to avoid extreme cases
+            pad_x = 40
+            usable_w = right_w - 2 * pad_x
 
-        # inner text margins
-        margin_x = 80
-        margin_y = 70
-        text_area_w = bubble_w - 2 * margin_x
-        start_y = by + margin_y
+        # Load avatar (blocking call; that's why we call this in a thread)
+        try:
+            pfp = self._download_image_to_pil(avatar_url)
+        except Exception:
+            pfp = Image.new("RGBA", (H, H), (80, 80, 80, 255))  # square fallback
 
-        # fonts
-        quote_f = self._q_font(64)
-        author_f = self._q_font(36)
-        tag_f = self._q_font(26)
+        # ---------------------------------------------------------------------
+        # Create a single background where the PFP is positioned so its center
+        # appears inside the left square (left_w x H). This avoids any seam.
+        # ---------------------------------------------------------------------
+        src_w, src_h = pfp.size
 
-        # wrap quote
-        quoted = f"“{text}”"
-        lines = self._q_wrap(draw, quoted, quote_f, text_area_w)
-        line_h = quote_f.getbbox("Ay")[3] - quote_f.getbbox("Ay")[1] + 8
+        # Resize pfp to cover the canvas (scale up so no blank)
+        scale = max(W / src_w, H / src_h)
+        new_w = int(src_w * scale)
+        new_h = int(src_h * scale)
+        resized = pfp.resize((new_w, new_h), resample=Image.LANCZOS)
+
+        # Determine desired center: place avatar center in the center of left square
+        desired_center_x = left_w // 2
+        desired_center_y = H // 2
+
+        # Center of the resized image
+        src_center_x = new_w / 2
+        src_center_y = new_h / 2
+
+        # Compute crop so src_center maps to desired_center
+        crop_left = int(src_center_x - desired_center_x)
+        crop_top = int(src_center_y - desired_center_y)
+
+        # Clamp crop rectangle to valid bounds
+        crop_left = max(0, min(crop_left, new_w - W))
+        crop_top = max(0, min(crop_top, new_h - H))
+
+        bg_full = resized.crop((crop_left, crop_top, crop_left + W, crop_top + H))
+
+        # Build canvas and paste single background (no duplicate left paste)
+        canvas = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+        canvas.paste(bg_full, (0, 0))
+
+        # ---------------------------------------------------------------------
+        # Compute dominant color of the avatar for the color-driven gradient
+        # ---------------------------------------------------------------------
+        def _dominant_color(img: Image.Image):
+            # quick downscale and common color pick
+            small = img.convert("RGB").resize((32, 32))
+            pixels = list(small.getdata())
+            from collections import Counter
+            ctr = Counter(pixels)
+            most = ctr.most_common(1)[0][0]
+            return most  # (r,g,b)
+
+        dom_color = _dominant_color(pfp if pfp.mode == "RGB" or pfp.mode == "RGBA" else pfp.convert("RGB"))
+
+        # ---------------------------------------------------------------------
+        # Build a horizontal gradient overlay for the RIGHT area,
+        # going from transparent (near left_w) to colored dark (near W).
+        # We'll create an RGBA overlay and paste it with itself as mask.
+        # ---------------------------------------------------------------------
+        overlay = Image.new("RGBA", (right_w, H), (0, 0, 0, 0))
+        r_dom, g_dom, b_dom = dom_color
+
+        # We'll make the color tint start subtle and increase to a mostly-dark tone.
+        for x in range(right_w):
+            t = x / max(right_w - 1, 1)  # 0..1 across right area
+            # color fades linearly toward black for RGB
+            r = int(r_dom * (1 - t))
+            g = int(g_dom * (1 - t))
+            b = int(b_dom * (1 - t))
+            # alpha increases so the tint gets stronger to the right
+            alpha = int(200 * t)  # top alpha about 200/255
+            # create a 1px wide vertical stripe
+            stripe = Image.new("RGBA", (1, H), (r, g, b, alpha))
+            overlay.paste(stripe, (x, 0))
+
+        # Composite the overlay onto the right side of canvas
+        canvas.paste(overlay, (left_w, 0), overlay)
+
+        # --- Darken ONLY the background (30%) before adding text ---
+        darken = Image.new("RGBA", canvas.size, (0, 0, 0, int(255 * 0.40)))
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), darken)
+
+        draw = ImageDraw.Draw(canvas)
+
+        # -------------------------
+        # Font loader (same as before)
+        # -------------------------
+        def load_font(size):
+            if base_font_path and os.path.exists(base_font_path):
+                try:
+                    return ImageFont.truetype(base_font_path, size=size)
+                except Exception:
+                    pass
+            try:
+                return ImageFont.truetype("arial.ttf", size=size)
+            except Exception:
+                return ImageFont.load_default()
+
+        # -------------------------
+        # Adaptive font sizing (same logic, using usable_w)
+        # -------------------------
+        start_font_size = 140
+        min_font_size = 48
+        quote_font = None
+        lines = []
+        used_font_size = start_font_size
+
+        for size in range(start_font_size, min_font_size - 1, -6):
+            f = load_font(size)
+            test_lines = self._wrap_text(draw, quote_text, f, usable_w)
+            if test_lines:
+                bbox = f.getbbox("Ay")
+                line_h = (bbox[3] - bbox[1]) + int(size * 0.12)
+                block_h = line_h * len(test_lines)
+            else:
+                line_h = f.getbbox("Ay")[3] - f.getbbox("Ay")[1]
+                block_h = line_h
+
+            reserved_for_author = int(size * 1.2) + int(size * 0.6) + 20
+            max_allowed_h = H - (pad_top * 2) - reserved_for_author
+
+            if block_h <= max_allowed_h and len(test_lines) <= 6:
+                quote_font = f
+                lines = test_lines
+                used_font_size = size
+                break
+
+        if quote_font is None:
+            used_font_size = min_font_size
+            quote_font = load_font(used_font_size)
+            lines = self._wrap_text(draw, quote_text, quote_font, usable_w)
+            bbox = quote_font.getbbox("Ay")
+            line_h = (bbox[3] - bbox[1]) + int(used_font_size * 0.12)
+
+        bbox = quote_font.getbbox("Ay")
+        line_h = (bbox[3] - bbox[1]) + int(used_font_size * 0.12)
         block_h = line_h * len(lines)
-        text_y = start_y + (bubble_h - block_h) // 3
 
-        # 3️⃣ draw quote text (centered)
+        author_size = max(int(used_font_size * 0.45), 20)
+        tag_size = max(int(used_font_size * 0.28), 14)
+        author_font = load_font(author_size)
+        tag_font = load_font(tag_size)
+
+        text_start_y = (H - block_h) // 2
+        text_start_y = max(pad_top, text_start_y - 20)
+
+        # center lines inside right area
+        x_center = left_w + (right_w // 2)
+        current_y = text_start_y
         for line in lines:
-            line_w = draw.textlength(line, font=quote_f)
-            x = bx + (bubble_w - line_w) // 2
-            draw.text((x + 2, text_y + 2), line, font=quote_f, fill=(0, 0, 0))
-            draw.text((x, text_y), line, font=quote_f, fill=(240, 240, 242))
-            text_y += line_h
+            bbox = draw.textbbox((0, 0), line, font=quote_font)
+            w_line = bbox[2] - bbox[0]
+            x = x_center - (w_line // 2)
+            draw.text((x, current_y), line, font=quote_font, fill=(255, 255, 255, 255))
+            current_y += line_h
 
-        # 4️⃣ author line
-        author_line = f"— {msg.author.display_name}"
-        aw = draw.textlength(author_line, font=author_f)
-        ax = bx + (bubble_w - aw) // 2
-        ay = by + bubble_h - margin_y - 60
-        draw.text((ax + 2, ay + 2), author_line, font=author_f, fill=(0, 0, 0))
-        draw.text((ax, ay), author_line, font=author_f, fill=(220, 222, 225))
+        # author & tag
+        current_y += 14
+        if author_name:
+            bbox = draw.textbbox((0, 0), author_name, font=author_font)
+            w_author = bbox[2] - bbox[0]
+            x_author = x_center - (w_author // 2)
+            draw.text((x_author, current_y), author_name, font=author_font, fill=(230, 230, 230, 255))
+            current_y += int(author_size * 1.05)
 
-        # 5️⃣ username tag
-        tag_line = f"@{getattr(msg.author, 'name', 'user')}"
-        tw = draw.textlength(tag_line, font=tag_f)
-        tx = bx + (bubble_w - tw) // 2
-        ty = ay + 34
-        draw.text((tx, ty), tag_line, font=tag_f, fill=(190, 192, 195))
+        if author_tag:
+            bbox = draw.textbbox((0, 0), author_tag, font=tag_font)
+            w_tag = bbox[2] - bbox[0]
+            x_tag = x_center - (w_tag // 2)
+            draw.text((x_tag, current_y), author_tag, font=tag_font, fill=(180, 180, 180, 255))
 
-        # 6️⃣ output
-        buf = io.BytesIO()
-        bg.save(buf, "PNG")
-        buf.seek(0)
-        return discord.File(buf, filename="quote.png")
+        # watermark
+        watermark = "Made with Helix"
+        wm_font = load_font(20)
+        bbox = draw.textbbox((0, 0), watermark, font=wm_font)
+        w_wm = bbox[2] - bbox[0]
+        draw.text((W - w_wm - 14, H - 28), watermark, font=wm_font, fill=(150, 150, 150, 180))
 
-
-
-    # ---------- minimal image if rendering fails ----------
-    def _q_minimal_card(self, text: str) -> discord.File:
-        W, H = 1280, 720
-        img = Image.new("RGB", (W, H), (12, 12, 14))
-        d = ImageDraw.Draw(img)
-        f = self._q_font(54)
-        # simple center
-        bbox = d.textbbox((0, 0), text, font=f)
-        x = (W - (bbox[2]-bbox[0])) // 2
-        y = (H - (bbox[3]-bbox[1])) // 2
-        d.text((x+3, y+3), text, font=f, fill=(0,0,0))
-        d.text((x, y), text, font=f, fill=(235,235,240))
-        buf = io.BytesIO()
-        img.save(buf, "PNG")
-        buf.seek(0)
-        return discord.File(buf, filename="quote.png")
+        output = io.BytesIO()
+        canvas.convert("RGB").save(output, format="PNG", optimize=True)
+        output.seek(0)
+        return output
 
 
 

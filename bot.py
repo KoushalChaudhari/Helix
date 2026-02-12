@@ -11,6 +11,7 @@ from typing import Dict
 import discord
 from discord.ext import commands
 from sqlalchemy import select
+from discord import app_commands
 
 # DB imports (adjust if your paths differ)
 from db.engine import AsyncSessionLocal, init_db
@@ -80,7 +81,21 @@ def get_prefix(bot: commands.Bot, message: discord.Message):
 # ---------------------------------------------------------------------
 # Bot
 # ---------------------------------------------------------------------
-bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
+
+bot = commands.Bot(
+    command_prefix=";",
+    intents=intents,
+    allowed_installs=app_commands.AppInstallationType(
+        guild=True,
+        user=True
+    ),
+    allowed_contexts=app_commands.AppCommandContext(
+        guild=True,
+        dm_channel=True,
+        private_channel=True   # <-- group DMs!
+    ),
+)
+bot.remove_command("help")
 bot.prefix_cache = prefix_cache  # expose to cogs (e.g., ;prefix command updates this)
 bot.boot_time = None             # set on_ready
 
@@ -95,6 +110,7 @@ EXTENSIONS = [
     "cogs.utility",
     "cogs.secret",
     "cogs.access",
+    "cogs.tools",
 ]
 
 async def load_extensions():
@@ -108,23 +124,37 @@ async def load_extensions():
 # ---------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------
+
 @bot.event
 async def on_ready():
     if bot.boot_time is None:
         from datetime import datetime, timezone
         bot.boot_time = datetime.now(timezone.utc)
 
-    # Application id can be useful for invite links in cogs
+    # Application id 
     try:
         app = await bot.application_info()
         bot.application_id = app.id
     except Exception:
         pass
 
+    # Sync app commands 
+    if not getattr(bot, "app_commands_synced", False):
+        try:
+            await bot.tree.sync()  # global sync
+            bot.app_commands_synced = True
+            log.info("✅ App commands synced successfully.")
+        except Exception as e:
+            log.exception("❌ Failed to sync app commands: %s", e)
+
     log.info("✅ Logged in as %s (ID: %s)", bot.user, getattr(bot.user, "id", "N/A"))
+
     try:
         await bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.playing, name="Evolution")
+            activity=discord.Activity(
+                type=discord.ActivityType.playing,
+                name="Evolution"
+            )
         )
     except Exception:
         pass

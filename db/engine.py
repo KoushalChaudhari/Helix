@@ -1,3 +1,4 @@
+# db/engine.py
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import sessionmaker
 from typing import Dict, Any
@@ -9,10 +10,10 @@ from config import DATABASE_URL
 ssl_ctx = ssl.create_default_context()
 
 engine: AsyncEngine = create_async_engine(
-    DATABASE_URL,                          
+    DATABASE_URL,                          # str (guaranteed by config.py)
     echo=False,
     pool_pre_ping=True,
-    connect_args={"ssl": ssl_ctx},         
+    connect_args={"ssl": ssl_ctx},         # type: Dict[str, Any] is OK
 )
 
 AsyncSessionLocal = async_sessionmaker(
