@@ -1,5 +1,74 @@
-node_modules
-# Keep environment variables out of version control
+# =========================
+# Environment / Secrets
+# =========================
 .env
+.env.*
+*.env
 
-/generated/prisma
+# =========================
+# Virtual Environment
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Python Cache / Bytecode
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Distribution / Build
+# =========================
+build/
+dist/
+*.egg-info/
+*.egg
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# OS / System Files
+# =========================
+.DS_Store
+desktop.ini
+Thumbs.db
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Local Test / Dev Files
+# =========================
+helix_progress.txt
+helix_struct.txt
+test_*.py
+
+# =========================
+# Node (since you have package.json)
+# =========================
+node_modules/
+package-lock.json
+
+# =========================
+# MoviePy temp / media output
+# =========================
+*.gif
+*.mp4
+*.png
+
+# =========================
+# Batch files (optional)
+# =========================
+Helix.bat
